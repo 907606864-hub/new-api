@@ -43,6 +43,7 @@ func (a *Adaptor) ConvertGeminiRequest(c *gin.Context, info *relaycommon.RelayIn
 			}
 		}
 	}
+	sanitizeGeminiRequest(request)
 	ensureIncludeServerSideToolInvocations(request)
 	return request, nil
 }
@@ -56,6 +57,7 @@ func (a *Adaptor) ConvertClaudeRequest(c *gin.Context, info *relaycommon.RelayIn
 	if !ok {
 		return nil, fmt.Errorf("expected Gemini generateContent request, got %T", result.Value)
 	}
+	sanitizeGeminiRequest(geminiRequest)
 	ensureIncludeServerSideToolInvocations(geminiRequest)
 	return geminiRequest, nil
 }
@@ -181,6 +183,7 @@ func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayIn
 	if !ok {
 		return nil, fmt.Errorf("expected Gemini generateContent request, got %T", result.Value)
 	}
+	sanitizeGeminiRequest(geminiRequest)
 	ensureIncludeServerSideToolInvocations(geminiRequest)
 	return geminiRequest, nil
 }
@@ -242,6 +245,7 @@ func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommo
 	if !ok {
 		return nil, fmt.Errorf("expected Gemini generateContent request, got %T", result.Value)
 	}
+	sanitizeGeminiRequest(geminiRequest)
 	ensureIncludeServerSideToolInvocations(geminiRequest)
 	return geminiRequest, nil
 }
@@ -295,6 +299,41 @@ func (a *Adaptor) GetModelList() []string {
 
 func (a *Adaptor) GetChannelName() string {
 	return ChannelName
+}
+
+func sanitizeGeminiRequest(req *dto.GeminiChatRequest) {
+	if req == nil || len(req.Contents) == 0 {
+		return
+	}
+	for i := range req.Contents {
+		parts := req.Contents[i].Parts
+		if len(parts) == 0 {
+			continue
+		}
+		newParts := make([]dto.GeminiPart, 0, len(parts))
+		for j := range parts {
+			part := parts[j]
+			if part.FunctionCall != nil {
+				part.ThoughtSignature = []byte(`"context_engineering_is_the_way_to_go"`)
+				newParts = append(newParts, part)
+			} else {
+				part.ThoughtSignature = nil
+				isEmpty := true
+				if part.FunctionResponse != nil ||
+					part.InlineData != nil ||
+					part.FileData != nil ||
+					part.ExecutableCode != nil ||
+					part.CodeExecutionResult != nil ||
+					part.Text != "" {
+					isEmpty = false
+				}
+				if !isEmpty {
+					newParts = append(newParts, part)
+				}
+			}
+		}
+		req.Contents[i].Parts = newParts
+	}
 }
 
 func ensureIncludeServerSideToolInvocations(req *dto.GeminiChatRequest) {
