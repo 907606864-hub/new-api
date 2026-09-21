@@ -101,3 +101,34 @@ func TestSafePolicyRejectsRequestPhaseHostedToolLoss(t *testing.T) {
 	assert.True(t, hasDiagnosticCode(loss.Diagnostics, "unsupported_hosted_tool"))
 	assert.True(t, hasDiagnosticCode(diagnostics, "unsupported_hosted_tool"))
 }
+
+func TestAttachGeminiRequestEnablesIncludeServerSideToolInvocations(t *testing.T) {
+	t.Parallel()
+
+	target := &dto.GeminiChatRequest{
+		Contents: []dto.GeminiChatContent{
+			{Role: "user", Parts: []dto.GeminiPart{{Text: "lookup weather"}}},
+		},
+	}
+	set := Set{
+		Definitions: []Definition{
+			{Kind: KindWebSearch, NativeType: "web_search"},
+			{
+				Kind: KindFunction,
+				Function: &Function{
+					Name:        "get_weather",
+					Description: "Get weather data",
+					Parameters:  map[string]any{"type": "object"},
+				},
+			},
+		},
+	}
+
+	out, _, err := AttachRequest(types.RelayFormatGemini, target, set, &convmeta.Options{})
+	require.NoError(t, err)
+	geminiReq, ok := out.(*dto.GeminiChatRequest)
+	require.True(t, ok)
+	require.NotNil(t, geminiReq.ToolConfig)
+	require.NotNil(t, geminiReq.ToolConfig.IncludeServerSideToolInvocations)
+	assert.True(t, *geminiReq.ToolConfig.IncludeServerSideToolInvocations)
+}

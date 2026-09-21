@@ -441,6 +441,12 @@ func attachGeminiRequest(request any, set Set) (any, []types.ConversionDiagnosti
 	}
 	config, choiceDiagnostics := encodeGeminiChoice(set.Choice)
 	target.ToolConfig = config
+	if len(functions) > 0 && len(tools) > 1 {
+		if target.ToolConfig == nil {
+			target.ToolConfig = &dto.ToolConfig{}
+		}
+		target.ToolConfig.IncludeServerSideToolInvocations = kitutil.GetPointer(true)
+	}
 	diagnostics = append(diagnostics, choiceDiagnostics...)
 	if set.ParallelAllowed != nil && !*set.ParallelAllowed {
 		diagnostics = append(diagnostics, semanticLoss(

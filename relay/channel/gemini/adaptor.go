@@ -43,6 +43,7 @@ func (a *Adaptor) ConvertGeminiRequest(c *gin.Context, info *relaycommon.RelayIn
 			}
 		}
 	}
+	ensureIncludeServerSideToolInvocations(request)
 	return request, nil
 }
 
@@ -55,6 +56,7 @@ func (a *Adaptor) ConvertClaudeRequest(c *gin.Context, info *relaycommon.RelayIn
 	if !ok {
 		return nil, fmt.Errorf("expected Gemini generateContent request, got %T", result.Value)
 	}
+	ensureIncludeServerSideToolInvocations(geminiRequest)
 	return geminiRequest, nil
 }
 
@@ -175,7 +177,12 @@ func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayIn
 	if err != nil {
 		return nil, err
 	}
-	return result.Value, nil
+	geminiRequest, ok := result.Value.(*dto.GeminiChatRequest)
+	if !ok {
+		return nil, fmt.Errorf("expected Gemini generateContent request, got %T", result.Value)
+	}
+	ensureIncludeServerSideToolInvocations(geminiRequest)
+	return geminiRequest, nil
 }
 
 func (a *Adaptor) ConvertRerankRequest(c *gin.Context, relayMode int, request dto.RerankRequest) (any, error) {
@@ -235,6 +242,7 @@ func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommo
 	if !ok {
 		return nil, fmt.Errorf("expected Gemini generateContent request, got %T", result.Value)
 	}
+	ensureIncludeServerSideToolInvocations(geminiRequest)
 	return geminiRequest, nil
 }
 
@@ -287,4 +295,41 @@ func (a *Adaptor) GetModelList() []string {
 
 func (a *Adaptor) GetChannelName() string {
 	return ChannelName
+}
+
+func ensureIncludeServerSideToolInvocations(req *dto.GeminiChatRequest) {
+	if req == nil || len(req.Tools) == 0 {
+		return
+	}
+	tools := req.GetTools()
+	if len(tools) == 0 {
+		return
+	}
+	hasFunction := false
+	hasBuiltIn := false
+	for _, t := range tools {
+		if t.FunctionDeclarations != nil {
+			hasFunction = true
+		}
+		if t.GoogleSearch != nil ||
+			t.GoogleSearchRetrieval != nil ||
+			t.CodeExecution != nil ||
+			t.URLContext != nil ||
+			len(t.GoogleMaps) > 0 ||
+			len(t.EnterpriseWebSearch) > 0 ||
+			len(t.FileSearch) > 0 ||
+			len(t.ComputerUse) > 0 ||
+			len(t.Retrieval) > 0 {
+			hasBuiltIn = true
+		}
+	}
+	if hasFunction && hasBuiltIn {
+		if req.ToolConfig == nil {
+			req.ToolConfig = &dto.ToolConfig{}
+		}
+		if req.ToolConfig.IncludeServerSideToolInvocations == nil {
+			b := true
+			req.ToolConfig.IncludeServerSideToolInvocations = &b
+		}
+	}
 }

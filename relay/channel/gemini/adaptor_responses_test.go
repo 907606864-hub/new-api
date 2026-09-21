@@ -174,3 +174,29 @@ func mustGeminiRawMessage(t *testing.T, value any) []byte {
 	require.NoError(t, err)
 	return raw
 }
+
+func TestConvertOpenAIResponsesRequestToGeminiBuiltInAndFunctionEnablesIncludeServerSideToolInvocations(t *testing.T) {
+	got := mustConvertResponsesToGemini(t, dto.OpenAIResponsesRequest{
+		Model: "gemini-test",
+		Input: mustGeminiRawMessage(t, "lookup weather"),
+		Tools: mustGeminiRawMessage(t, []map[string]any{
+			{"type": "web_search_preview"},
+			{
+				"type":        "function",
+				"name":        "get_weather",
+				"description": "Get weather data",
+				"parameters": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"city": map[string]any{"type": "string"},
+					},
+					"required": []string{"city"},
+				},
+			},
+		}),
+	})
+
+	require.NotNil(t, got.ToolConfig)
+	require.NotNil(t, got.ToolConfig.IncludeServerSideToolInvocations)
+	assert.True(t, *got.ToolConfig.IncludeServerSideToolInvocations)
+}
