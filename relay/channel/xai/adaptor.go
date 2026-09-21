@@ -2,12 +2,14 @@ package xai
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
 
 	"github.com/QuantumNous/new-api/relay/channel"
 	"github.com/QuantumNous/new-api/relay/channel/openai"
+	"github.com/QuantumNous/new-api/service"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
@@ -27,10 +29,19 @@ func (a *Adaptor) ConvertGeminiRequest(*gin.Context, *relaycommon.RelayInfo, *dt
 	return nil, errors.New("not implemented")
 }
 
-func (a *Adaptor) ConvertClaudeRequest(*gin.Context, *relaycommon.RelayInfo, *dto.ClaudeRequest) (any, error) {
-	//TODO implement me
-	//panic("implement me")
-	return nil, errors.New("not available")
+func (a *Adaptor) ConvertClaudeRequest(c *gin.Context, info *relaycommon.RelayInfo, req *dto.ClaudeRequest) (any, error) {
+	result, err := service.ConvertRequest(c, info, types.RelayFormatOpenAI, req)
+	if err != nil {
+		return nil, err
+	}
+	oaiReq, ok := result.Value.(*dto.GeneralOpenAIRequest)
+	if !ok {
+		return nil, fmt.Errorf("expected OpenAI chat completions request, got %T", result.Value)
+	}
+	if info.SupportStreamOptions && info.IsStream {
+		oaiReq.StreamOptions = &dto.StreamOptions{IncludeUsage: true}
+	}
+	return a.ConvertOpenAIRequest(c, info, oaiReq)
 }
 
 func (a *Adaptor) ConvertAudioRequest(c *gin.Context, info *relaycommon.RelayInfo, request dto.AudioRequest) (io.Reader, error) {
@@ -52,6 +63,9 @@ func (a *Adaptor) Init(info *relaycommon.RelayInfo) {
 }
 
 func (a *Adaptor) GetRequestURL(info *relaycommon.RelayInfo) (string, error) {
+	if info.RelayFormat == types.RelayFormatClaude {
+		return fmt.Sprintf("%s/v1/chat/completions", info.ChannelBaseUrl), nil
+	}
 	return relaycommon.GetFullRequestURL(info.ChannelBaseUrl, info.RequestURLPath, info.ChannelType), nil
 }
 
@@ -114,23 +128,29 @@ func (a *Adaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, request
 }
 
 func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo) (usage any, err *types.NewAPIError) {
-	switch info.RelayMode {
-	case constant.RelayModeImagesGenerations, constant.RelayModeImagesEdits:
-		usage, err = openai.OpenaiImageHandler(c, info, resp)
-	case constant.RelayModeResponses:
-		if info.IsStream {
-			usage, err = openai.OaiResponsesStreamHandler(c, info, resp)
-		} else {
-			usage, err = openai.OaiResponsesHandler(c, info, resp)
-		}
+	switch info.RelayFormat {
+	case types.RelayFormatClaude:
+		adaptor := openai.Adaptor{}
+		return adaptor.DoResponse(c, resp, info)
 	default:
-		if info.IsStream {
-			usage, err = xAIStreamHandler(c, info, resp)
-		} else {
-			usage, err = xAIHandler(c, info, resp)
+		switch info.RelayMode {
+		case constant.RelayModeImagesGenerations, constant.RelayModeImagesEdits:
+			usage, err = openai.OpenaiImageHandler(c, info, resp)
+		case constant.RelayModeResponses:
+			if info.IsStream {
+				usage, err = openai.OaiResponsesStreamHandler(c, info, resp)
+			} else {
+				usage, err = openai.OaiResponsesHandler(c, info, resp)
+			}
+		default:
+			if info.IsStream {
+				usage, err = xAIStreamHandler(c, info, resp)
+			} else {
+				usage, err = xAIHandler(c, info, resp)
+			}
 		}
+		return
 	}
-	return
 }
 
 func (a *Adaptor) GetModelList() []string {

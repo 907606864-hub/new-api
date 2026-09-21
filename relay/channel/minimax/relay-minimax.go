@@ -21,6 +21,8 @@ func GetRequestURL(info *relaycommon.RelayInfo) (string, error) {
 		switch info.RelayMode {
 		case constant.RelayModeChatCompletions:
 			return fmt.Sprintf("%s/v1/text/chatcompletion_v2", baseUrl), nil
+		case constant.RelayModeResponses:
+			return fmt.Sprintf("%s/v1/responses", baseUrl), nil
 		case constant.RelayModeImagesGenerations:
 			return fmt.Sprintf("%s/v1/image_generation", baseUrl), nil
 		case constant.RelayModeAudioSpeech:
