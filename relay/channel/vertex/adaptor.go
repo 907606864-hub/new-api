@@ -320,8 +320,30 @@ func (a *Adaptor) ConvertEmbeddingRequest(c *gin.Context, info *relaycommon.Rela
 }
 
 func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommon.RelayInfo, request dto.OpenAIResponsesRequest) (any, error) {
-	// TODO implement me
-	return nil, errors.New("not implemented")
+	switch a.RequestMode {
+	case RequestModeClaude:
+		result, err := service.ConvertRequest(c, info, types.RelayFormatClaude, &request)
+		if err != nil {
+			return nil, err
+		}
+		claudeRequest, ok := result.Value.(*dto.ClaudeRequest)
+		if !ok {
+			return nil, fmt.Errorf("expected Anthropic Messages request, got %T", result.Value)
+		}
+		return a.ConvertClaudeRequest(c, info, claudeRequest)
+	case RequestModeGemini:
+		result, err := service.ConvertRequest(c, info, types.RelayFormatGemini, &request)
+		if err != nil {
+			return nil, err
+		}
+		geminiRequest, ok := result.Value.(*dto.GeminiChatRequest)
+		if !ok {
+			return nil, fmt.Errorf("expected Gemini generateContent request, got %T", result.Value)
+		}
+		return a.ConvertGeminiRequest(c, info, geminiRequest)
+	default:
+		return nil, errors.New("unsupported request mode for vertex responses")
+	}
 }
 
 func (a *Adaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, requestBody io.Reader) (any, error) {
@@ -335,7 +357,9 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycom
 		case RequestModeClaude:
 			return claudeAdaptor.DoResponse(c, resp, info)
 		case RequestModeGemini:
-			if info.RelayMode == constant.RelayModeGemini {
+			if info.RelayMode == constant.RelayModeResponses {
+				return gemini.GeminiResponsesStreamHandler(c, info, resp)
+			} else if info.RelayMode == constant.RelayModeGemini {
 				return gemini.GeminiTextGenerationStreamHandler(c, info, resp)
 			} else {
 				return gemini.GeminiChatStreamHandler(c, info, resp)
@@ -348,7 +372,9 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycom
 		case RequestModeClaude:
 			return claudeAdaptor.DoResponse(c, resp, info)
 		case RequestModeGemini:
-			if info.RelayMode == constant.RelayModeGemini {
+			if info.RelayMode == constant.RelayModeResponses {
+				return gemini.GeminiResponsesHandler(c, info, resp)
+			} else if info.RelayMode == constant.RelayModeGemini {
 				return gemini.GeminiTextGenerationHandler(c, info, resp)
 			} else {
 				if strings.HasPrefix(info.UpstreamModelName, "imagen") {
