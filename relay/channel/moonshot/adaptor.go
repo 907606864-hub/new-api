@@ -107,7 +107,58 @@ func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommo
 	if info != nil && request.Reasoning != nil {
 		info.SetReasoningEffort(request.Reasoning.Effort)
 	}
+	if len(request.Tools) > 0 {
+		sanitizedTools, err := sanitizeMoonshotResponsesTools(request.Tools)
+		if err != nil {
+			return nil, err
+		}
+		request.Tools = sanitizedTools
+	}
 	return request, nil
+}
+
+var defaultCustomToolSchema = map[string]any{
+	"type": "object",
+	"properties": map[string]any{
+		"input": map[string]any{
+			"type":        "string",
+			"description": "Input content or patch text",
+		},
+	},
+	"required": []string{"input"},
+}
+
+func sanitizeMoonshotResponsesTools(raw []byte) ([]byte, error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return raw, nil
+	}
+	var tools []map[string]any
+	if err := common.Unmarshal(raw, &tools); err != nil {
+		return nil, err
+	}
+	sanitized := make([]map[string]any, 0, len(tools))
+	for _, tool := range tools {
+		toolType := strings.TrimSpace(common.Interface2String(tool["type"]))
+		switch toolType {
+		case "function":
+			sanitized = append(sanitized, tool)
+		case "web_search":
+			sanitized = append(sanitized, tool)
+		case "custom":
+			tool["type"] = "function"
+			if params, ok := tool["parameters"].(map[string]any); !ok || len(params) == 0 {
+				tool["parameters"] = defaultCustomToolSchema
+			}
+			sanitized = append(sanitized, tool)
+		default:
+			// Moonshot rejects unknown built-in tool types like tool_search, image_generation, code_interpreter, etc.
+			continue
+		}
+	}
+	if len(sanitized) == 0 {
+		return nil, nil
+	}
+	return common.Marshal(sanitized)
 }
 
 func (a *Adaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, requestBody io.Reader) (any, error) {

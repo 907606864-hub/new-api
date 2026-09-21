@@ -3,16 +3,17 @@ package xai
 import (
 	"errors"
 	"fmt"
+	"github.com/QuantumNous/new-api/common"
 	"io"
 	"net/http"
 	"strings"
 
 	"github.com/QuantumNous/new-api/relay/channel"
 	"github.com/QuantumNous/new-api/relay/channel/openai"
-	"github.com/QuantumNous/new-api/service"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/model_setting"
 
 	"github.com/QuantumNous/new-api/relay/constant"
@@ -120,7 +121,55 @@ func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommo
 	if request.Model == "" && info != nil {
 		request.Model = info.UpstreamModelName
 	}
+	if len(request.Tools) > 0 {
+		sanitizedTools, err := sanitizeXAIResponsesTools(request.Tools)
+		if err != nil {
+			return nil, err
+		}
+		request.Tools = sanitizedTools
+	}
 	return request, nil
+}
+
+var defaultCustomToolSchema = map[string]any{
+	"type": "object",
+	"properties": map[string]any{
+		"input": map[string]any{
+			"type":        "string",
+			"description": "Input content or patch text",
+		},
+	},
+	"required": []string{"input"},
+}
+
+func sanitizeXAIResponsesTools(raw []byte) ([]byte, error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return raw, nil
+	}
+	var tools []map[string]any
+	if err := common.Unmarshal(raw, &tools); err != nil {
+		return nil, err
+	}
+	sanitized := make([]map[string]any, 0, len(tools))
+	for _, tool := range tools {
+		toolType := strings.TrimSpace(common.Interface2String(tool["type"]))
+		switch toolType {
+		case "tool_search":
+			continue
+		case "custom":
+			tool["type"] = "function"
+			if params, ok := tool["parameters"].(map[string]any); !ok || len(params) == 0 {
+				tool["parameters"] = defaultCustomToolSchema
+			}
+			sanitized = append(sanitized, tool)
+		default:
+			sanitized = append(sanitized, tool)
+		}
+	}
+	if len(sanitized) == 0 {
+		return nil, nil
+	}
+	return common.Marshal(sanitized)
 }
 
 func (a *Adaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, requestBody io.Reader) (any, error) {
