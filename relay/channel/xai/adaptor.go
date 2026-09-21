@@ -121,6 +121,14 @@ func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommo
 	if request.Model == "" && info != nil {
 		request.Model = info.UpstreamModelName
 	}
+	if request.Reasoning != nil {
+		switch strings.ToLower(strings.TrimSpace(request.Reasoning.Effort)) {
+		case "max":
+			request.Reasoning.Effort = "high"
+		case "none":
+			request.Reasoning.Effort = "low"
+		}
+	}
 	if len(request.Tools) > 0 {
 		sanitizedTools, err := sanitizeXAIResponsesTools(request.Tools)
 		if err != nil {

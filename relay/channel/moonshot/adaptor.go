@@ -104,6 +104,11 @@ func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommo
 	if request.Model == "" && info != nil {
 		request.Model = info.UpstreamModelName
 	}
+	if request.Reasoning != nil {
+		if strings.ToLower(strings.TrimSpace(request.Reasoning.Effort)) == "none" {
+			request.Reasoning.Effort = "low"
+		}
+	}
 	if info != nil && request.Reasoning != nil {
 		info.SetReasoningEffort(request.Reasoning.Effort)
 	}
