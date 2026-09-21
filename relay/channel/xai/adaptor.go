@@ -129,12 +129,21 @@ func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommo
 			request.Reasoning.Effort = "low"
 		}
 	}
+	if len(request.Input) > 0 {
+		sanitizedInput, err := sanitizeXAIResponsesInput(request.Input)
+		if err == nil {
+			request.Input = sanitizedInput
+		}
+	}
 	if len(request.Tools) > 0 {
 		sanitizedTools, err := sanitizeXAIResponsesTools(request.Tools)
 		if err != nil {
 			return nil, err
 		}
 		request.Tools = sanitizedTools
+	}
+	if len(request.Tools) == 0 || string(request.Tools) == "null" || string(request.Tools) == "[]" {
+		request.ToolChoice = nil
 	}
 	return request, nil
 }
@@ -148,6 +157,36 @@ var defaultCustomToolSchema = map[string]any{
 		},
 	},
 	"required": []string{"input"},
+}
+
+func sanitizeXAIResponsesInput(raw []byte) ([]byte, error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return raw, nil
+	}
+	var items []map[string]any
+	if err := common.Unmarshal(raw, &items); err != nil {
+		return raw, nil
+	}
+	modified := false
+	for _, item := range items {
+		itemType := strings.TrimSpace(common.Interface2String(item["type"]))
+		switch itemType {
+		case "reasoning":
+			if item["content"] == nil {
+				delete(item, "content")
+				modified = true
+			}
+		case "compaction":
+			if item["encrypted_content"] == nil {
+				item["encrypted_content"] = ""
+				modified = true
+			}
+		}
+	}
+	if !modified {
+		return raw, nil
+	}
+	return common.Marshal(items)
 }
 
 func sanitizeXAIResponsesTools(raw []byte) ([]byte, error) {
@@ -168,12 +207,17 @@ func sanitizeXAIResponsesTools(raw []byte) ([]byte, error) {
 			tool["type"] = "function"
 			if params, ok := tool["parameters"].(map[string]any); !ok || len(params) == 0 {
 				tool["parameters"] = defaultCustomToolSchema
+			} else {
+				normalizeIntegerParameters(params)
 			}
 			sanitized = append(sanitized, tool)
 		case "web_search":
 			delete(tool, "external_web_access")
 			sanitized = append(sanitized, tool)
 		default:
+			if params, ok := tool["parameters"].(map[string]any); ok {
+				normalizeIntegerParameters(params)
+			}
 			sanitized = append(sanitized, tool)
 		}
 	}
@@ -181,6 +225,36 @@ func sanitizeXAIResponsesTools(raw []byte) ([]byte, error) {
 		return nil, nil
 	}
 	return common.Marshal(sanitized)
+}
+
+func normalizeIntegerParameters(schema map[string]any) {
+	for k, v := range schema {
+		if k == "properties" {
+			if props, ok := v.(map[string]any); ok {
+				for propName, propVal := range props {
+					if pMap, ok := propVal.(map[string]any); ok {
+						t := common.Interface2String(pMap["type"])
+						pLower := strings.ToLower(propName)
+						if t == "number" && isIntegerFieldName(pLower) {
+							pMap["type"] = "integer"
+						}
+						normalizeIntegerParameters(pMap)
+					}
+				}
+			}
+		} else if vMap, ok := v.(map[string]any); ok {
+			normalizeIntegerParameters(vMap)
+		}
+	}
+}
+
+func isIntegerFieldName(name string) bool {
+	for _, token := range []string{"tokens", "token_budget", "_ms", "limit", "count", "budget", "index", "id", "lines", "size", "depth", "ordinal"} {
+		if strings.Contains(name, token) {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *Adaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, requestBody io.Reader) (any, error) {
