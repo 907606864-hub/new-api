@@ -4657,6 +4657,8 @@
     "Recommended actions": "推荐操作",
     "Recommended to keep this high to avoid upstream throttling.": "建议保持此值较高，以避免上游限流。",
     "Record IP Address": "记录 IP 地址",
+
+    "Mandatory security policy: IP logging is permanently enabled by administrator.": "系统安全策略强制要求：管理员已全局开启 IP 记录，不允许个人关闭。",
     "Record quota usage": "记录配额使用量",
     "Recover auto-disabled channels only": "仅恢复自动禁用的渠道",
     "Recursion Strategy": "递归策略",

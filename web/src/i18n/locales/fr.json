@@ -4657,6 +4657,8 @@
     "Recommended actions": "Actions recommandées",
     "Recommended to keep this high to avoid upstream throttling.": "Il est recommandé de maintenir cette valeur élevée pour éviter la limitation en amont.",
     "Record IP Address": "Enregistrer l'adresse IP",
+
+    "Mandatory security policy: IP logging is permanently enabled by administrator.": "Politique de sécurité obligatoire : la journalisation IP est activée en permanence par l’administrateur.",
     "Record quota usage": "Enregistrer l'utilisation du quota",
     "Recover auto-disabled channels only": "Restaurer uniquement les canaux désactivés automatiquement",
     "Recursion Strategy": "Stratégie de récursion",

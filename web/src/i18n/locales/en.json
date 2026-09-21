@@ -4657,6 +4657,8 @@
     "Recommended actions": "Recommended actions",
     "Recommended to keep this high to avoid upstream throttling.": "Recommended to keep this high to avoid upstream throttling.",
     "Record IP Address": "Record IP Address",
+
+    "Mandatory security policy: IP logging is permanently enabled by administrator.": "Mandatory security policy: IP logging is permanently enabled by administrator.",
     "Record quota usage": "Record quota usage",
     "Recover auto-disabled channels only": "Recover auto-disabled channels only",
     "Recursion Strategy": "Recursion Strategy",

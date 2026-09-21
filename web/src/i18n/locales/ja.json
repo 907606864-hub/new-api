@@ -4657,6 +4657,8 @@
     "Recommended actions": "おすすめの操作",
     "Recommended to keep this high to avoid upstream throttling.": "アップストリームのスロットリングを避けるため、これを高く保つことを推奨します。",
     "Record IP Address": "IPアドレスを記録",
+
+    "Mandatory security policy: IP logging is permanently enabled by administrator.": "セキュリティポリシー：管理者がIP記録を常時有効化しています。",
     "Record quota usage": "クォータ使用量を記録",
     "Recover auto-disabled channels only": "自動無効化されたチャネルの復旧のみ",
     "Recursion Strategy": "再帰戦略",
