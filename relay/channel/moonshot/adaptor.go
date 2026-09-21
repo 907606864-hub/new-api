@@ -143,6 +143,7 @@ func sanitizeMoonshotResponsesTools(raw []byte) ([]byte, error) {
 		case "function":
 			sanitized = append(sanitized, tool)
 		case "web_search":
+			delete(tool, "external_web_access")
 			sanitized = append(sanitized, tool)
 		case "custom":
 			tool["type"] = "function"

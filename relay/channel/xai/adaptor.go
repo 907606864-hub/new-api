@@ -162,6 +162,9 @@ func sanitizeXAIResponsesTools(raw []byte) ([]byte, error) {
 				tool["parameters"] = defaultCustomToolSchema
 			}
 			sanitized = append(sanitized, tool)
+		case "web_search":
+			delete(tool, "external_web_access")
+			sanitized = append(sanitized, tool)
 		default:
 			sanitized = append(sanitized, tool)
 		}
