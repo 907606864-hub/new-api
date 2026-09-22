@@ -305,6 +305,10 @@ func sanitizeGeminiRequest(req *dto.GeminiChatRequest) {
 	if req == nil || len(req.Contents) == 0 {
 		return
 	}
+	// Replacing signatures lets trimmed or reordered histories pass Google's
+	// signature validation at the cost of reasoning continuity. Honour the same
+	// channel switch relayconvert uses for its bypass value instead of forcing it.
+	rewriteSignatures := model_setting.GetGeminiSettings().FunctionCallThoughtSignatureEnabled
 	for i := range req.Contents {
 		parts := req.Contents[i].Parts
 		if len(parts) == 0 {
@@ -314,10 +318,14 @@ func sanitizeGeminiRequest(req *dto.GeminiChatRequest) {
 		for j := range parts {
 			part := parts[j]
 			if part.FunctionCall != nil {
-				part.ThoughtSignature = []byte(`"context_engineering_is_the_way_to_go"`)
+				if rewriteSignatures {
+					part.ThoughtSignature = []byte(`"context_engineering_is_the_way_to_go"`)
+				}
 				newParts = append(newParts, part)
 			} else {
-				part.ThoughtSignature = nil
+				if rewriteSignatures {
+					part.ThoughtSignature = nil
+				}
 				isEmpty := true
 				if part.FunctionResponse != nil ||
 					part.InlineData != nil ||

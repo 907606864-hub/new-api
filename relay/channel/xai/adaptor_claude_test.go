@@ -108,6 +108,8 @@ func TestConvertOpenAIResponsesRequestIntegerNormalization(t *testing.T) {
 						"cmd": {"type": "string"},
 						"max_output_tokens": {"type": "number"},
 						"yield_time_ms": {"type": "number"},
+						"width": {"type": "number"},
+						"session_id": {"type": "number"},
 						"float_val": {"type": "number"}
 					}
 				}
@@ -124,5 +126,7 @@ func TestConvertOpenAIResponsesRequestIntegerNormalization(t *testing.T) {
 	props := tools[0]["parameters"].(map[string]any)["properties"].(map[string]any)
 	assert.Equal(t, "integer", props["max_output_tokens"].(map[string]any)["type"])
 	assert.Equal(t, "integer", props["yield_time_ms"].(map[string]any)["type"])
+	assert.Equal(t, "number", props["width"].(map[string]any)["type"])
+	assert.Equal(t, "number", props["session_id"].(map[string]any)["type"])
 	assert.Equal(t, "number", props["float_val"].(map[string]any)["type"])
 }

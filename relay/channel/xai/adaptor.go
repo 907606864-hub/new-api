@@ -3,11 +3,11 @@ package xai
 import (
 	"errors"
 	"fmt"
-	"github.com/QuantumNous/new-api/common"
 	"io"
 	"net/http"
 	"strings"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/relay/channel"
 	"github.com/QuantumNous/new-api/relay/channel/openai"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
@@ -248,9 +248,13 @@ func normalizeIntegerParameters(schema map[string]any) {
 	}
 }
 
+// Codex declares integer-valued fields such as max_output_tokens and
+// yield_time_ms as "number"; Grok then emits floats that Codex rejects. Only
+// unit suffixes are unambiguous enough to retype, substring matches like "id"
+// or "size" would also hit width, video, confidence or font_size.
 func isIntegerFieldName(name string) bool {
-	for _, token := range []string{"tokens", "token_budget", "_ms", "limit", "count", "budget", "index", "id", "lines", "size", "depth", "ordinal"} {
-		if strings.Contains(name, token) {
+	for _, suffix := range []string{"_tokens", "_ms", "_count", "_index", "_lines"} {
+		if strings.HasSuffix(name, suffix) {
 			return true
 		}
 	}
@@ -265,7 +269,14 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycom
 	switch info.RelayFormat {
 	case types.RelayFormatClaude:
 		adaptor := openai.Adaptor{}
-		return adaptor.DoResponse(c, resp, info)
+		usage, err = adaptor.DoResponse(c, resp, info)
+		// xAI reports completion_tokens without reasoning tokens; apply the same
+		// correction as xAIHandler so Claude-format requests bill identically.
+		if u, ok := usage.(*dto.Usage); ok && u != nil && u.TotalTokens > u.PromptTokens {
+			u.CompletionTokens = u.TotalTokens - u.PromptTokens
+			u.CompletionTokenDetails.TextTokens = u.CompletionTokens - u.CompletionTokenDetails.ReasoningTokens
+		}
+		return
 	default:
 		switch info.RelayMode {
 		case constant.RelayModeImagesGenerations, constant.RelayModeImagesEdits:
