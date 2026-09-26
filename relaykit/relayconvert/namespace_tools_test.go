@@ -164,3 +164,29 @@ func TestConvertRequestWithoutNamespaceToolsMatchesBaseline(t *testing.T) {
 	assert.JSONEq(t, string(baseJSON), string(gotJSON))
 	assert.Empty(t, (&convmeta.Values{}).ResponsesNamespaceTools())
 }
+
+func TestConvertRequestMapsArrayToolOutputForClaude(t *testing.T) {
+	t.Parallel()
+
+	maxTokens := uint(256)
+	req := &dto.OpenAIResponsesRequest{
+		Model:           "claude-test",
+		MaxOutputTokens: &maxTokens,
+		Tools:           json.RawMessage(`[{"type":"function","name":"lookup","parameters":{"type":"object"}}]`),
+		Input: json.RawMessage(`[
+			{"type":"message","role":"user","content":"go"},
+			{"type":"function_call","name":"lookup","call_id":"c1","arguments":"{}"},
+			{"type":"function_call_output","call_id":"c1","output":[{"type":"input_text","text":"{\"memories\":[]}"}]},
+			{"type":"function_call","name":"lookup","call_id":"c2","arguments":"{}"},
+			{"type":"function_call_output","call_id":"c2","output":"plain"}
+		]`),
+	}
+	result, err := ConvertRequest(context.Background(), &convmeta.Values{}, types.RelayFormatClaude, req)
+	require.NoError(t, err)
+	encoded, err := json.Marshal(result.Value)
+	require.NoError(t, err)
+
+	assert.Contains(t, string(encoded), `"content":[{"type":"text","text":"{\"memories\":[]}"}],"tool_use_id":"c1"`)
+	assert.Contains(t, string(encoded), `"content":"plain","tool_use_id":"c2"`)
+	assert.NotContains(t, string(encoded), "input_text")
+}

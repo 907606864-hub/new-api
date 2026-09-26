@@ -98,7 +98,11 @@ func OpenAIResponsesRequestToClaudeMessages(c context.Context, info convmeta.Met
 		case ResponsesInputTypeCustomToolCall:
 			claudeRequest.Messages = appendClaudeToolUse(claudeRequest.Messages, responsesFunctionCallItemToClaudeToolUse(item, "input"))
 		case ResponsesInputTypeFunctionCallOutput, ResponsesInputTypeCustomToolOutput:
-			claudeRequest.Messages = appendClaudeToolResult(claudeRequest.Messages, responsesFunctionOutputItemToClaudeToolResult(item))
+			toolResult, err := responsesFunctionOutputItemToClaudeToolResult(c, item)
+			if err != nil {
+				return nil, err
+			}
+			claudeRequest.Messages = appendClaudeToolResult(claudeRequest.Messages, toolResult)
 		default:
 			sourceRole := strings.TrimSpace(kitutil.Interface2String(item["role"]))
 			role := responsesClaudeRole(sourceRole)
@@ -212,12 +216,33 @@ func responsesFunctionCallItemToClaudeToolUse(item map[string]any, inputKey stri
 	}
 }
 
-func responsesFunctionOutputItemToClaudeToolResult(item map[string]any) dto.ClaudeMediaMessage {
+func responsesFunctionOutputItemToClaudeToolResult(c context.Context, item map[string]any) (dto.ClaudeMediaMessage, error) {
+	content, err := responsesToolOutputToClaudeContent(c, item["output"])
+	if err != nil {
+		return dto.ClaudeMediaMessage{}, err
+	}
 	return dto.ClaudeMediaMessage{
 		Type:      "tool_result",
 		ToolUseId: CallID(item),
-		Content:   responsesToolOutputValue(item["output"]),
+		Content:   content,
+	}, nil
+}
+
+// responsesToolOutputToClaudeContent maps array outputs (MCP results arrive as
+// input_text/input_image parts) onto Claude content blocks, which reject the
+// Responses part types. Non-array outputs pass through unchanged.
+func responsesToolOutputToClaudeContent(c context.Context, value any) (any, error) {
+	if _, isArray := value.([]any); !isArray {
+		return responsesToolOutputValue(value), nil
 	}
+	parts, err := responsesInputContentToClaudeMediaMessages(c, value)
+	if err != nil {
+		return nil, err
+	}
+	if len(parts) == 0 {
+		return "", nil
+	}
+	return parts, nil
 }
 
 func responsesToolOutputValue(value any) any {
