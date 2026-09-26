@@ -245,6 +245,9 @@ func executeRequestSteps(c context.Context, info convmeta.Meta, from types.Relay
 	if err != nil {
 		return nil, err
 	}
+	if info != nil {
+		info.SetResponsesNamespaceTools(namespaceToolRefs(tools.NamespaceRefs))
+	}
 	steps := make([]RequestStep, 0, len(specs))
 	for _, spec := range specs {
 		current, err = prepareRequestForStep(current, spec, target)
@@ -540,4 +543,15 @@ func convertResponsesRequestToChat(c context.Context, _ convmeta.Meta, request a
 		return nil, fmt.Errorf("expected OpenAI responses request, got %T", request)
 	}
 	return oairesponses.ResponsesRequestToChatCompletionsRequest(c, responsesRequest)
+}
+
+func namespaceToolRefs(refs map[string]toolconv.NamespaceRef) map[string]convmeta.NamespaceToolRef {
+	if len(refs) == 0 {
+		return nil
+	}
+	out := make(map[string]convmeta.NamespaceToolRef, len(refs))
+	for name, ref := range refs {
+		out[name] = convmeta.NamespaceToolRef{Namespace: ref.Namespace, Name: ref.Name}
+	}
+	return out
 }

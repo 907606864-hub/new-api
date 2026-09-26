@@ -43,6 +43,12 @@ func (info *RelayInfo) CountBillableToolCall(itemType string, functionName strin
 		if functionName == "" {
 			return
 		}
+		// Converted channels see the flattened "<namespace>__<name>" form;
+		// bill under the nested name so per-tool prices match native
+		// Responses channels.
+		if ref, ok := info.responsesNamespaceTools[functionName]; ok && ref.Name != "" {
+			functionName = ref.Name
+		}
 		if _, reserved := reservedBillableToolNames[functionName]; reserved {
 			return
 		}

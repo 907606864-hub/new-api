@@ -23,7 +23,7 @@ func TestChatCompletionsResponseToResponsesPreservesTextToolCallsAndUsage(t *tes
 		Usage: dto.Usage{PromptTokens: 3, CompletionTokens: 5, TotalTokens: 8},
 	}
 
-	resp, usage, err := ChatCompletionsResponseToResponsesResponse(chat, "resp_1")
+	resp, usage, err := ChatCompletionsResponseToResponsesResponse(chat, "resp_1", nil)
 	require.NoError(t, err)
 	require.NotNil(t, usage)
 
@@ -50,7 +50,7 @@ func TestChatCompletionsResponseToResponsesEmitsReasoningSummaryBeforeText(t *te
 		Choices: []dto.OpenAITextResponseChoice{
 			{Message: message, FinishReason: "stop"},
 		},
-	}, "resp_1")
+	}, "resp_1", nil)
 	require.NoError(t, err)
 
 	require.Len(t, resp.Output, 2)
@@ -83,7 +83,7 @@ func TestChatCompletionsResponseToResponsesMapsIncompleteFinishReasons(t *testin
 						FinishReason: tt.finishReason,
 					},
 				},
-			}, "resp_1")
+			}, "resp_1", nil)
 			require.NoError(t, err)
 
 			assert.Equal(t, `"incomplete"`, string(resp.Status))

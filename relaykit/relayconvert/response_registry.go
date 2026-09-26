@@ -609,6 +609,7 @@ func executeResponseStreamSteps(c context.Context, info convmeta.Meta, state *Re
 	var usage *dto.Usage
 	for i := start; i < len(state.specs); i++ {
 		spec := state.specs[i]
+		applyResponsesNamespaceRefs(info, state.stepStates[i])
 		next := make([]any, 0)
 		for _, value := range current {
 			prepareResponseStreamInfo(info, spec)
@@ -661,7 +662,19 @@ func finalizeResponseStreamStep(c context.Context, info convmeta.Meta, spec Resp
 	if spec.FinalizeStream == nil {
 		return nil, nil, nil
 	}
+	applyResponsesNamespaceRefs(info, state)
 	return spec.FinalizeStream(c, info, state)
+}
+
+// applyResponsesNamespaceRefs copies the request's flattened-name map onto
+// the chat-to-Responses stream state, which is created before any chunk
+// arrives and so cannot see the map at construction time.
+func applyResponsesNamespaceRefs(info convmeta.Meta, state any) {
+	streamState, ok := state.(*ChatToResponsesStreamState)
+	if !ok || streamState == nil || len(streamState.NamespaceRefs) > 0 {
+		return
+	}
+	streamState.NamespaceRefs = convmeta.ResponsesNamespaceToolsOf(info)
 }
 
 func (s *ResponseStreamState) rememberUsage(usage *dto.Usage) {
@@ -893,7 +906,7 @@ func usageFromClaudeResponse(resp *dto.ClaudeResponse) *dto.Usage {
 	return nil
 }
 
-func convertOAIChatResponseToOAIResponses(_ context.Context, _ convmeta.Meta, response any) (any, *dto.Usage, error) {
+func convertOAIChatResponseToOAIResponses(_ context.Context, info convmeta.Meta, response any) (any, *dto.Usage, error) {
 	chatResponse, err := asOAIChatResponse(response)
 	if err != nil {
 		return nil, nil, err
@@ -902,7 +915,7 @@ func convertOAIChatResponseToOAIResponses(_ context.Context, _ convmeta.Meta, re
 	if id == "" {
 		id = fmt.Sprintf("resp_%s", kitutil.GetUUID())
 	}
-	return ChatCompletionsResponseToResponsesResponse(chatResponse, id)
+	return oaichat.ChatCompletionsResponseToResponsesResponse(chatResponse, id, convmeta.ResponsesNamespaceToolsOf(info))
 }
 
 func convertOAIResponsesResponseToOAIChat(_ context.Context, _ convmeta.Meta, response any) (any, *dto.Usage, error) {

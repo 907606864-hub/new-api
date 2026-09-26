@@ -92,6 +92,10 @@ type Set struct {
 	ParallelAllowed  *bool
 	NativeToolConfig json.RawMessage
 	History          []HostedHistoryItem
+	// NamespaceRefs maps a flattened tool name back to the namespace and
+	// nested name it came from. Nil unless the request carried namespace
+	// tools, so requests without them stay byte-identical.
+	NamespaceRefs map[string]NamespaceRef
 }
 
 func (s Set) Empty() bool {

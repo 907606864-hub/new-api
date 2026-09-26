@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/relaykit/relayconvert/convmeta"
 	kitutil "github.com/QuantumNous/new-api/relaykit/relayconvert/kitutil"
 )
 
@@ -35,7 +36,7 @@ const (
 	responsesIncompleteReasonMaxTokens      = "max_output_tokens"
 )
 
-func ChatCompletionsResponseToResponsesResponse(resp *dto.OpenAITextResponse, id string) (*dto.OpenAIResponsesResponse, *dto.Usage, error) {
+func ChatCompletionsResponseToResponsesResponse(resp *dto.OpenAITextResponse, id string, namespaceRefs map[string]convmeta.NamespaceToolRef) (*dto.OpenAIResponsesResponse, *dto.Usage, error) {
 	if resp == nil {
 		return nil, nil, errors.New("response is nil")
 	}
@@ -95,7 +96,7 @@ func ChatCompletionsResponseToResponsesResponse(resp *dto.OpenAITextResponse, id
 	}
 
 	for i, toolCall := range choice.Message.ParseToolCalls() {
-		toolOutput, err := chatToolCallToResponsesOutput(toolCall, id, i, responseOutputStatus(out))
+		toolOutput, err := chatToolCallToResponsesOutput(toolCall, id, i, responseOutputStatus(out), namespaceRefs)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -204,18 +205,20 @@ func responseStatusString(resp *dto.OpenAIResponsesResponse) string {
 	return strings.TrimSpace(status)
 }
 
-func chatToolCallToResponsesOutput(toolCall dto.ToolCallRequest, responseID string, index int, status string) (dto.ResponsesOutput, error) {
+func chatToolCallToResponsesOutput(toolCall dto.ToolCallRequest, responseID string, index int, status string, namespaceRefs map[string]convmeta.NamespaceToolRef) (dto.ResponsesOutput, error) {
 	callID := strings.TrimSpace(toolCall.ID)
 	if callID == "" {
 		callID = fmt.Sprintf("%s_call_%d", responseID, index)
 	}
 	if toolCall.Type == "" || toolCall.Type == "function" {
+		name, namespace := restoreResponsesNamespace(toolCall.Function.Name, namespaceRefs)
 		return dto.ResponsesOutput{
 			Type:      responsesOutputTypeFunctionCall,
 			ID:        callID,
 			Status:    status,
 			CallId:    callID,
-			Name:      toolCall.Function.Name,
+			Name:      name,
+			Namespace: namespace,
 			Arguments: chatArgumentsRawMessage(toolCall.Function.Arguments),
 		}, nil
 	}
@@ -268,4 +271,16 @@ func intPtr(v int) *int {
 
 func stringPtr(v string) *string {
 	return &v
+}
+
+// restoreResponsesNamespace returns the original nested name and namespace
+// when the upstream model called a flattened tool from this request. A miss
+// leaves the name unchanged and the namespace empty, which omitempty keeps
+// out of the wire payload.
+func restoreResponsesNamespace(name string, refs map[string]convmeta.NamespaceToolRef) (string, string) {
+	ref, ok := refs[name]
+	if !ok {
+		return name, ""
+	}
+	return ref.Name, ref.Namespace
 }

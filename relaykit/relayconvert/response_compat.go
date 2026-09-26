@@ -146,7 +146,7 @@ func StreamResponseGeminiChat2OpenAI(geminiResponse *dto.GeminiChatResponse) (*d
 }
 
 func ChatCompletionsResponseToResponsesResponse(resp *dto.OpenAITextResponse, id string) (*dto.OpenAIResponsesResponse, *dto.Usage, error) {
-	return oaichat.ChatCompletionsResponseToResponsesResponse(resp, id)
+	return oaichat.ChatCompletionsResponseToResponsesResponse(resp, id, nil)
 }
 
 func ResponsesStatusFromChatFinishReason(finishReason string) (string, *dto.IncompleteDetails) {

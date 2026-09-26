@@ -51,6 +51,20 @@ type Meta interface {
 	// ConvOptions returns the request-scoped conversion options snapshot.
 	// Must never return nil.
 	ConvOptions() *Options
+
+	// ResponsesNamespaceTools maps a flattened tool name back to the namespace
+	// and nested name it came from, built from the current request's own
+	// tools. Nil unless that request carried namespace tools.
+	ResponsesNamespaceTools() map[string]NamespaceToolRef
+	// SetResponsesNamespaceTools records the map for the current attempt.
+	SetResponsesNamespaceTools(map[string]NamespaceToolRef)
+}
+
+// NamespaceToolRef is the original namespace and nested name behind one
+// flattened tool name sent upstream.
+type NamespaceToolRef struct {
+	Namespace string
+	Name      string
 }
 
 // ClaudeConvertInfo carries mutable state for OpenAI chat → Claude Messages
@@ -105,6 +119,8 @@ type Values struct {
 	ConversionChain   []types.RelayFormat
 
 	Options *Options
+
+	NamespaceTools map[string]NamespaceToolRef
 }
 
 var _ Meta = (*Values)(nil)
@@ -246,4 +262,26 @@ func ReasoningStateOf(m Meta) *dto.ReasoningConversionState {
 		return nil
 	}
 	return m.ReasoningState()
+}
+
+func (v *Values) ResponsesNamespaceTools() map[string]NamespaceToolRef {
+	if v == nil {
+		return nil
+	}
+	return v.NamespaceTools
+}
+
+func (v *Values) SetResponsesNamespaceTools(refs map[string]NamespaceToolRef) {
+	if v != nil {
+		v.NamespaceTools = refs
+	}
+}
+
+// ResponsesNamespaceToolsOf reads the flattened-name map, tolerating a nil
+// Meta the way the other accessors do.
+func ResponsesNamespaceToolsOf(m Meta) map[string]NamespaceToolRef {
+	if m == nil {
+		return nil
+	}
+	return m.ResponsesNamespaceTools()
 }

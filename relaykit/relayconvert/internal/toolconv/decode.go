@@ -136,20 +136,29 @@ func extractOpenAIResponsesRequest(request any) (any, Set, error) {
 
 	set := Set{Source: types.RelayFormatOpenAIResponses}
 	set.ParallelAllowed = rawBoolPointer(source.ParallelToolCalls)
+	input, toolChoice := source.Input, source.ToolChoice
 	if len(source.Tools) > 0 {
 		var rawTools []json.RawMessage
 		if err := kitutil.Unmarshal(source.Tools, &rawTools); err != nil {
 			return nil, Set{}, fmt.Errorf("invalid Responses tools: %w", err)
 		}
-		for index, rawTool := range rawTools {
-			definition, err := decodeOpenAIResponsesDefinition(rawTool)
-			if err != nil {
-				return nil, Set{}, fmt.Errorf("tools[%d]: %w", index, err)
+		if definitions, refs, err := flattenResponsesNamespaceTools(rawTools); err != nil {
+			return nil, Set{}, fmt.Errorf("invalid Responses tools: %w", err)
+		} else if refs != nil {
+			set.Definitions = definitions
+			set.NamespaceRefs = refs
+			input, toolChoice = rewriteResponsesNamespacedNames(input, toolChoice, refs)
+		} else {
+			for index, rawTool := range rawTools {
+				definition, err := decodeOpenAIResponsesDefinition(rawTool)
+				if err != nil {
+					return nil, Set{}, fmt.Errorf("tools[%d]: %w", index, err)
+				}
+				set.Definitions = append(set.Definitions, definition)
 			}
-			set.Definitions = append(set.Definitions, definition)
 		}
 	}
-	choice, err := decodeOpenAIResponsesChoice(source.ToolChoice)
+	choice, err := decodeOpenAIResponsesChoice(toolChoice)
 	if err != nil {
 		return nil, Set{}, err
 	}
@@ -159,7 +168,7 @@ func extractOpenAIResponsesRequest(request any) (any, Set, error) {
 	clone.Tools = nil
 	clone.ToolChoice = nil
 	clone.ParallelToolCalls = nil
-	sanitizedInput, history, err := extractOpenAIResponsesHostedHistory(source.Input)
+	sanitizedInput, history, err := extractOpenAIResponsesHostedHistory(input)
 	if err != nil {
 		return nil, Set{}, err
 	}

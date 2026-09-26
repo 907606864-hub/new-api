@@ -374,6 +374,7 @@ type ResponsesOutput struct {
 	Result              string                          `json:"result,omitempty"`
 	CallId              string                          `json:"call_id,omitempty"`
 	Name                string                          `json:"name,omitempty"`
+	Namespace           string                          `json:"namespace,omitempty"`
 	Arguments           json.RawMessage                 `json:"arguments,omitempty"`
 	Action              json.RawMessage                 `json:"action,omitempty"`
 	Queries             json.RawMessage                 `json:"queries,omitempty"`
@@ -556,6 +557,7 @@ type ResponsesStreamResponse struct {
 	Delta           string                   `json:"delta,omitempty"`
 	Arguments       *string                  `json:"arguments,omitempty"`
 	Name            string                   `json:"name,omitempty"`
+	Namespace       string                   `json:"namespace,omitempty"`
 	Text            *string                  `json:"text,omitempty"`
 	Item            *ResponsesOutput         `json:"item,omitempty"`
 	SequenceNumber  *int                     `json:"sequence_number,omitempty"`

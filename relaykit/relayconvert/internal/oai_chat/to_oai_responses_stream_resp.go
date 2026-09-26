@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/relaykit/relayconvert/convmeta"
 	kitutil "github.com/QuantumNous/new-api/relaykit/relayconvert/kitutil"
 )
 
@@ -21,6 +22,9 @@ type ChatToResponsesStreamState struct {
 	Model   string
 	Created int64
 	Usage   *dto.Usage
+	// NamespaceRefs restores flattened tool calls to the namespace and nested
+	// name from the request. Nil leaves every name untouched.
+	NamespaceRefs map[string]convmeta.NamespaceToolRef
 
 	// EmitSequenceNumber enables the required sequence_number field for current
 	// Responses API SSE consumers while preserving the legacy relaykit default.
@@ -59,6 +63,7 @@ type chatToResponsesStreamTool struct {
 	ItemID      string
 	CallID      string
 	Name        string
+	Namespace   string
 	Arguments   strings.Builder
 	Done        bool
 }
@@ -510,11 +515,13 @@ func (s *ChatToResponsesStreamState) appendToolCallDelta(toolCall dto.ToolCallRe
 	tool := s.toolsByIndex[chatIndex]
 	events := make([]ChatToResponsesStreamEvent, 0, 2)
 	if tool == nil {
+		name, namespace := restoreResponsesNamespace(strings.TrimSpace(toolCall.Function.Name), s.NamespaceRefs)
 		tool = &chatToResponsesStreamTool{
 			ChatIndex:   chatIndex,
 			OutputIndex: s.nextIndex(chatToResponsesOutputRef{Kind: "tool", ToolIndex: chatIndex}),
 			CallID:      incomingID,
-			Name:        strings.TrimSpace(toolCall.Function.Name),
+			Name:        name,
+			Namespace:   namespace,
 		}
 		tool.ItemID = incomingID
 		if tool.ItemID == "" {
@@ -531,6 +538,7 @@ func (s *ChatToResponsesStreamState) appendToolCallDelta(toolCall dto.ToolCallRe
 				Status:    "in_progress",
 				CallId:    tool.callID(),
 				Name:      tool.Name,
+				Namespace: tool.Namespace,
 				Arguments: []byte(`""`),
 			},
 		}))
@@ -546,10 +554,12 @@ func (s *ChatToResponsesStreamState) appendToolCallDelta(toolCall dto.ToolCallRe
 	}
 	incomingName := strings.TrimSpace(toolCall.Function.Name)
 	if incomingName != "" {
-		if tool.Name != "" && tool.Name != incomingName {
-			return nil, fmt.Errorf("tool-call stream index %d changed name from %q to %q", chatIndex, tool.Name, incomingName)
+		name, namespace := restoreResponsesNamespace(incomingName, s.NamespaceRefs)
+		if tool.Name != "" && tool.Name != name {
+			return nil, fmt.Errorf("tool-call stream index %d changed name from %q to %q", chatIndex, tool.Name, name)
 		}
-		tool.Name = incomingName
+		tool.Name = name
+		tool.Namespace = namespace
 	}
 	if toolCall.Function.Arguments != "" {
 		tool.Arguments.WriteString(toolCall.Function.Arguments)
@@ -822,6 +832,7 @@ func (s *ChatToResponsesStreamState) toolOutput(tool *chatToResponsesStreamTool,
 		Status:    status,
 		CallId:    tool.callID(),
 		Name:      tool.Name,
+		Namespace: tool.Namespace,
 		Arguments: chatArgumentsRawMessage(tool.Arguments.String()),
 	}
 }

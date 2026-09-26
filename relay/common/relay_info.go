@@ -200,6 +200,9 @@ type RelayInfo struct {
 
 	// convOptions caches the converter settings snapshot (see ConvOptions).
 	convOptions *convmeta.Options
+	// responsesNamespaceTools maps flattened tool names back to the namespace
+	// and nested name from this request. Reset per attempt in InitChannelMeta.
+	responsesNamespaceTools map[string]convmeta.NamespaceToolRef
 
 	conversionDiagnostics          []types.ConversionDiagnostic
 	conversionDiagnosticKeys       map[conversionDiagnosticKey]struct{}
@@ -309,6 +312,7 @@ func (info *RelayInfo) InitChannelMeta(c *gin.Context) {
 	// Channel identity feeds the converter options snapshot (e.g.
 	// OpenRouterDialect); drop the cache so a cross-channel retry rebuilds it.
 	info.convOptions = nil
+	info.responsesNamespaceTools = nil
 	if model_setting.GetGlobalSettings().PassThroughRequestEnabled || channelMeta.ChannelSetting.PassThroughBodyEnabled {
 		info.ReasoningEffort = ""
 		info.ReasoningConversion = nil
@@ -1234,4 +1238,17 @@ func RemoveGeminiDisabledFields(jsonData []byte) ([]byte, error) {
 		return jsonData, nil
 	}
 	return jsonDataAfter, nil
+}
+
+func (info *RelayInfo) ResponsesNamespaceTools() map[string]convmeta.NamespaceToolRef {
+	if info == nil {
+		return nil
+	}
+	return info.responsesNamespaceTools
+}
+
+func (info *RelayInfo) SetResponsesNamespaceTools(refs map[string]convmeta.NamespaceToolRef) {
+	if info != nil {
+		info.responsesNamespaceTools = refs
+	}
 }
