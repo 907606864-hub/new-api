@@ -17,15 +17,9 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { DirectionProvider as BaseDirectionProvider } from '@base-ui/react/direction-provider'
-import { createContext, useContext, useEffect, useState } from 'react'
-
-import { getCookie, setCookie, removeCookie } from '@/lib/cookies'
+import { createContext, useContext, useEffect } from 'react'
 
 export type Direction = 'ltr' | 'rtl'
-
-const DEFAULT_DIRECTION = 'ltr'
-const DIRECTION_COOKIE_NAME = 'dir'
-const DIRECTION_COOKIE_MAX_AGE = 60 * 60 * 24 * 365 // 1 year
 
 type DirectionContextType = {
   defaultDir: Direction
@@ -34,38 +28,25 @@ type DirectionContextType = {
   resetDir: () => void
 }
 
+const fixedDirection: DirectionContextType = {
+  defaultDir: 'ltr',
+  dir: 'ltr',
+  setDir: () => {},
+  resetDir: () => {},
+}
+
 const DirectionContext = createContext<DirectionContextType | null>(null)
 
-export function DirectionProvider({ children }: { children: React.ReactNode }) {
-  const [dir, _setDir] = useState<Direction>(
-    () => (getCookie(DIRECTION_COOKIE_NAME) as Direction) || DEFAULT_DIRECTION
-  )
-
+export function DirectionProvider(props: { children: React.ReactNode }) {
   useEffect(() => {
-    const htmlElement = document.documentElement
-    htmlElement.setAttribute('dir', dir)
-  }, [dir])
-
-  const setDir = (dir: Direction) => {
-    _setDir(dir)
-    setCookie(DIRECTION_COOKIE_NAME, dir, DIRECTION_COOKIE_MAX_AGE)
-  }
-
-  const resetDir = () => {
-    _setDir(DEFAULT_DIRECTION)
-    removeCookie(DIRECTION_COOKIE_NAME)
-  }
+    document.documentElement.setAttribute('dir', fixedDirection.dir)
+  }, [])
 
   return (
-    <DirectionContext
-      value={{
-        defaultDir: DEFAULT_DIRECTION,
-        dir,
-        setDir,
-        resetDir,
-      }}
-    >
-      <BaseDirectionProvider direction={dir}>{children}</BaseDirectionProvider>
+    <DirectionContext value={fixedDirection}>
+      <BaseDirectionProvider direction={fixedDirection.dir}>
+        {props.children}
+      </BaseDirectionProvider>
     </DirectionContext>
   )
 }

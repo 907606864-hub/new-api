@@ -16,15 +16,11 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { createContext, useContext, useEffect, useState } from 'react'
+import { createContext, useContext, useEffect } from 'react'
 
 import { fonts } from '@/config/fonts'
-import { getCookie, setCookie, removeCookie } from '@/lib/cookies'
 
 type Font = (typeof fonts)[number]
-
-const FONT_COOKIE_NAME = 'font'
-const FONT_COOKIE_MAX_AGE = 60 * 60 * 24 * 365 // 1 year
 
 type FontContextType = {
   font: Font
@@ -32,39 +28,25 @@ type FontContextType = {
   resetFont: () => void
 }
 
+const fixedFont: FontContextType = {
+  font: fonts[0],
+  setFont: () => {},
+  resetFont: () => {},
+}
+
 const FontContext = createContext<FontContextType | null>(null)
 
-export function FontProvider({ children }: { children: React.ReactNode }) {
-  const [font, _setFont] = useState<Font>(() => {
-    const savedFont = getCookie(FONT_COOKIE_NAME)
-    return fonts.includes(savedFont as Font) ? (savedFont as Font) : fonts[0]
-  })
-
+export function FontProvider(props: { children: React.ReactNode }) {
   useEffect(() => {
-    const applyFont = (font: string) => {
-      const root = document.documentElement
-      root.classList.forEach((cls) => {
-        if (cls.startsWith('font-')) root.classList.remove(cls)
-      })
-      root.classList.add(`font-${font}`)
-    }
+    const root = document.documentElement
+    const fontClasses = [...root.classList].filter((cls) =>
+      cls.startsWith('font-')
+    )
+    root.classList.remove(...fontClasses)
+    root.classList.add(`font-${fixedFont.font}`)
+  }, [])
 
-    applyFont(font)
-  }, [font])
-
-  const setFont = (font: Font) => {
-    setCookie(FONT_COOKIE_NAME, font, FONT_COOKIE_MAX_AGE)
-    _setFont(font)
-  }
-
-  const resetFont = () => {
-    removeCookie(FONT_COOKIE_NAME)
-    _setFont(fonts[0])
-  }
-
-  return (
-    <FontContext value={{ font, setFont, resetFont }}>{children}</FontContext>
-  )
+  return <FontContext value={fixedFont}>{props.children}</FontContext>
 }
 
 // eslint-disable-next-line react-refresh/only-export-components

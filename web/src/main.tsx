@@ -30,6 +30,7 @@ import { readCachedStatus, statusQueryOptions } from '@/lib/status-query'
 
 import { DirectionProvider } from './context/direction-provider'
 import { FontProvider } from './context/font-provider'
+import { ThemeCustomizationProvider } from './context/theme-customization-provider'
 import { ThemeProvider } from './context/theme-provider'
 import './i18n/config'
 // Generated Routes
@@ -108,7 +109,9 @@ if (!rootElement.innerHTML) {
         <ThemeProvider>
           <FontProvider>
             <DirectionProvider>
-              <RouterProvider router={router} />
+              <ThemeCustomizationProvider>
+                <RouterProvider router={router} />
+              </ThemeCustomizationProvider>
             </DirectionProvider>
           </FontProvider>
         </ThemeProvider>
