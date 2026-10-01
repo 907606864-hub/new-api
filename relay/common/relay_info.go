@@ -203,6 +203,9 @@ type RelayInfo struct {
 	// responsesNamespaceTools maps flattened tool names back to the namespace
 	// and nested name from this request. Reset per attempt in InitChannelMeta.
 	responsesNamespaceTools map[string]convmeta.NamespaceToolRef
+	// responsesToolState is written by request conversion and read by the
+	// matching response conversion (see ResponsesToolState).
+	responsesToolState *convmeta.ResponsesToolState
 
 	conversionDiagnostics          []types.ConversionDiagnostic
 	conversionDiagnosticKeys       map[conversionDiagnosticKey]struct{}
@@ -313,6 +316,7 @@ func (info *RelayInfo) InitChannelMeta(c *gin.Context) {
 	// OpenRouterDialect); drop the cache so a cross-channel retry rebuilds it.
 	info.convOptions = nil
 	info.responsesNamespaceTools = nil
+	info.responsesToolState = nil
 	if model_setting.GetGlobalSettings().PassThroughRequestEnabled || channelMeta.ChannelSetting.PassThroughBodyEnabled {
 		info.ReasoningEffort = ""
 		info.ReasoningConversion = nil
@@ -905,6 +909,19 @@ func (info *RelayInfo) EnsureClaudeConvertInfo() *convmeta.ClaudeConvertInfo {
 		}
 	}
 	return info.ClaudeConvertInfo
+}
+
+func (info *RelayInfo) ResponsesToolState() *convmeta.ResponsesToolState {
+	if info == nil {
+		return nil
+	}
+	return info.responsesToolState
+}
+
+func (info *RelayInfo) SetResponsesToolState(state *convmeta.ResponsesToolState) {
+	if info != nil {
+		info.responsesToolState = state
+	}
 }
 
 func (info *RelayInfo) GetSendResponseCount() int {

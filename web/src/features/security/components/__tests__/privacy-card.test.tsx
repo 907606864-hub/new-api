@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { Toaster, toast } from 'sonner'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -49,14 +49,14 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-function renderPrivacy() {
+function renderPrivacy(setting = profile.setting) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   })
   const onUpdate = vi.fn()
   const rendered = render(
     <QueryClientProvider client={client}>
-      <PrivacyCard profile={profile} onUpdate={onUpdate} />
+      <PrivacyCard profile={{ ...profile, setting }} onUpdate={onUpdate} />
       <Toaster />
     </QueryClientProvider>
   )
@@ -64,57 +64,42 @@ function renderPrivacy() {
 }
 
 describe('privacy settings', () => {
-  it('keyboard toggling off saves false and refreshes the displayed profile', async () => {
-    vi.spyOn(api, 'get').mockResolvedValue({
-      data: { success: true, data: profile },
-    })
-    const put = vi
-      .spyOn(api, 'put')
-      .mockResolvedValue({ data: { success: true } })
+  it('shows the mandatory policy even when the saved profile disabled IP logging', () => {
+    renderPrivacy(JSON.stringify({ record_ip_log: false }))
+    const toggle = screen.getByRole('switch', { name: 'Record IP Address' })
+    expect(toggle).toBeChecked()
+    expect(toggle).toHaveAttribute('aria-disabled', 'true')
+    expect(
+      screen.getByText('Mandatory security policy: IP logging is permanently enabled by administrator.')
+    ).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Save Settings' })).not.toBeInTheDocument()
+  })
+
+  it('mouse clicks cannot disable IP logging or submit settings', async () => {
+    const get = vi.spyOn(api, 'get').mockResolvedValue({ data: { success: true, data: profile } })
+    const put = vi.spyOn(api, 'put').mockResolvedValue({ data: { success: true } })
     const user = userEvent.setup()
     const { onUpdate } = renderPrivacy()
     const toggle = screen.getByRole('switch', { name: 'Record IP Address' })
+    await user.click(toggle)
     expect(toggle).toBeChecked()
-    toggle.focus()
-    await user.keyboard(' ')
-    expect(toggle).not.toBeChecked()
-    await user.click(screen.getByRole('button', { name: 'Save Settings' }))
-    await waitFor(() => expect(onUpdate).toHaveBeenCalled())
-    expect(put).toHaveBeenCalledWith(
-      '/api/user/setting',
-      expect.objectContaining({ record_ip_log: false })
-    )
-  })
-
-  it('failed configuration reads preserve the edited toggle and do not submit or refresh', async () => {
-    vi.spyOn(api, 'get').mockRejectedValue(new Error('offline'))
-    const put = vi.spyOn(api, 'put')
-    const user = userEvent.setup()
-    const { onUpdate } = renderPrivacy()
-    await user.click(screen.getByRole('switch', { name: 'Record IP Address' }))
-    await user.click(screen.getByRole('button', { name: 'Save Settings' }))
-    expect(await screen.findByText('offline')).toBeVisible()
+    expect(get).not.toHaveBeenCalled()
     expect(put).not.toHaveBeenCalled()
     expect(onUpdate).not.toHaveBeenCalled()
-    expect(
-      screen.getByRole('switch', { name: 'Record IP Address' })
-    ).not.toBeChecked()
-    expect(screen.getByRole('button', { name: 'Save Settings' })).toBeEnabled()
   })
 
-  it('failed saves keep the draft available for retry without refreshing the profile', async () => {
-    vi.spyOn(api, 'get').mockResolvedValue({
-      data: { success: true, data: profile },
-    })
-    vi.spyOn(api, 'put').mockResolvedValue({ data: { success: false } })
+  it('keyboard input cannot disable IP logging or submit settings', async () => {
+    const get = vi.spyOn(api, 'get').mockResolvedValue({ data: { success: true, data: profile } })
+    const put = vi.spyOn(api, 'put').mockResolvedValue({ data: { success: true } })
     const user = userEvent.setup()
     const { onUpdate } = renderPrivacy()
-    await user.click(screen.getByRole('switch', { name: 'Record IP Address' }))
-    await user.click(screen.getByRole('button', { name: 'Save Settings' }))
-    expect(await screen.findByText('Failed to update settings')).toBeVisible()
+    const toggle = screen.getByRole('switch', { name: 'Record IP Address' })
+    expect(toggle).toHaveAttribute('tabindex', '-1')
+    toggle.focus()
+    await user.keyboard(' ')
+    expect(toggle).toBeChecked()
+    expect(get).not.toHaveBeenCalled()
+    expect(put).not.toHaveBeenCalled()
     expect(onUpdate).not.toHaveBeenCalled()
-    expect(
-      screen.getByRole('switch', { name: 'Record IP Address' })
-    ).not.toBeChecked()
   })
 })
