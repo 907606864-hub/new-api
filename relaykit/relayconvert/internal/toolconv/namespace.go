@@ -1,6 +1,7 @@
 package toolconv
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -29,10 +30,10 @@ const (
 
 // flattenResponsesNamespaceTools expands type=namespace groups into one
 // function definition per nested function, named "<namespace>__<name>".
-// Non-function nested tools are dropped with their group, exactly as before
-// namespace groups were understood. Tools without any namespace group return
-// a nil map, which keeps their output byte-identical.
-func flattenResponsesNamespaceTools(rawTools []json.RawMessage) ([]Definition, map[string]NamespaceRef, error) {
+// Native Responses adapters can also retain custom tools for conversion to
+// functions. Other protocol conversions keep their existing function-only
+// behavior. Without a namespace group the nil map leaves tools untouched.
+func flattenResponsesNamespaceTools(rawTools []json.RawMessage, includeCustom bool) ([]Definition, map[string]NamespaceRef, error) {
 	if len(rawTools) == 0 {
 		return nil, nil, nil
 	}
@@ -82,7 +83,7 @@ func flattenResponsesNamespaceTools(rawTools []json.RawMessage) ([]Definition, m
 			if err := kitutil.Unmarshal(nestedRaw, &nestedTool); err != nil {
 				return nil, nil, fmt.Errorf("tools[%d].tools contains a non-object entry", index)
 			}
-			if rawToolType(nestedTool) != "function" {
+			if kind := rawToolType(nestedTool); kind != "function" && !(includeCustom && kind == "custom") {
 				continue
 			}
 			original := rawToolName(nestedTool)
@@ -218,7 +219,7 @@ func rewriteResponsesNamespacedInput(input json.RawMessage, byRef map[NamespaceR
 			continue
 		}
 		itemType := strings.TrimSpace(kitutil.JsonRawMessageToString(item["type"]))
-		if itemType != "function_call" && itemType != "custom_tool_call" && itemType != "function_call_output" {
+		if itemType != "function_call" && itemType != "custom_tool_call" && itemType != "function_call_output" && itemType != "custom_tool_call_output" {
 			continue
 		}
 		namespace := strings.TrimSpace(kitutil.JsonRawMessageToString(item["namespace"]))
@@ -255,7 +256,28 @@ func rewriteResponsesNamespacedChoice(raw json.RawMessage, byRef map[NamespaceRe
 	if err := kitutil.Unmarshal(raw, &choice); err != nil {
 		return raw
 	}
-	if strings.TrimSpace(kitutil.JsonRawMessageToString(choice["type"])) != "function" {
+	if rawToolType(choice) == "allowed_tools" {
+		var tools []json.RawMessage
+		if kitutil.Unmarshal(choice["tools"], &tools) != nil {
+			return raw
+		}
+		changed := false
+		for index, tool := range tools {
+			rewritten := rewriteResponsesNamespacedChoice(tool, byRef)
+			changed = changed || !bytes.Equal(tool, rewritten)
+			tools[index] = rewritten
+		}
+		if !changed {
+			return raw
+		}
+		choice["tools"], _ = kitutil.Marshal(tools)
+		rewritten, err := kitutil.Marshal(choice)
+		if err != nil {
+			return raw
+		}
+		return rewritten
+	}
+	if kind := rawToolType(choice); kind != "function" && kind != "custom" {
 		return raw
 	}
 	namespace := strings.TrimSpace(kitutil.JsonRawMessageToString(choice["namespace"]))

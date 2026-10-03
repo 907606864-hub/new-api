@@ -1,6 +1,7 @@
 package xai
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -12,6 +13,7 @@ import (
 	"github.com/QuantumNous/new-api/relay/channel/openai"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/relaykit/relayconvert"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/model_setting"
@@ -118,6 +120,9 @@ func (a *Adaptor) ConvertEmbeddingRequest(c *gin.Context, info *relaycommon.Rela
 }
 
 func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommon.RelayInfo, request dto.OpenAIResponsesRequest) (any, error) {
+	if err := relayconvert.PrepareNativeResponsesTools(info, &request); err != nil {
+		return nil, err
+	}
 	if request.Model == "" && info != nil {
 		request.Model = info.UpstreamModelName
 	}
@@ -148,37 +153,26 @@ func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommo
 	return request, nil
 }
 
-var defaultCustomToolSchema = map[string]any{
-	"type": "object",
-	"properties": map[string]any{
-		"input": map[string]any{
-			"type":        "string",
-			"description": "Input content or patch text",
-		},
-	},
-	"required": []string{"input"},
-}
-
 func sanitizeXAIResponsesInput(raw []byte) ([]byte, error) {
 	if len(raw) == 0 || string(raw) == "null" {
 		return raw, nil
 	}
-	var items []map[string]any
+	var items []map[string]json.RawMessage
 	if err := common.Unmarshal(raw, &items); err != nil {
 		return raw, nil
 	}
 	modified := false
 	for _, item := range items {
-		itemType := strings.TrimSpace(common.Interface2String(item["type"]))
+		itemType := strings.TrimSpace(common.JsonRawMessageToString(item["type"]))
 		switch itemType {
 		case "reasoning":
-			if item["content"] == nil {
+			if strings.TrimSpace(string(item["content"])) == "null" {
 				delete(item, "content")
 				modified = true
 			}
 		case "compaction":
-			if item["encrypted_content"] == nil {
-				item["encrypted_content"] = ""
+			if len(item["encrypted_content"]) == 0 || strings.TrimSpace(string(item["encrypted_content"])) == "null" {
+				item["encrypted_content"] = json.RawMessage(`""`)
 				modified = true
 			}
 		}
@@ -203,14 +197,6 @@ func sanitizeXAIResponsesTools(raw []byte) ([]byte, error) {
 		switch toolType {
 		case "tool_search":
 			continue
-		case "custom":
-			tool["type"] = "function"
-			if params, ok := tool["parameters"].(map[string]any); !ok || len(params) == 0 {
-				tool["parameters"] = defaultCustomToolSchema
-			} else {
-				normalizeIntegerParameters(params)
-			}
-			sanitized = append(sanitized, tool)
 		case "web_search":
 			delete(tool, "external_web_access")
 			sanitized = append(sanitized, tool)

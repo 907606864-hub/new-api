@@ -677,7 +677,7 @@ func (s *ChatToResponsesStreamState) doneDeltaEvents() []ChatToResponsesStreamEv
 			}
 		}
 		if tool.Custom {
-			input := customToolInputFromArguments(tool.Arguments.String())
+			input := CustomToolInputFromArguments(tool.Arguments.String())
 			if input != "" {
 				events = append(events, s.event(responsesEventCustomToolInputDelta, dto.ResponsesStreamResponse{
 					Type:        responsesEventCustomToolInputDelta,
@@ -891,7 +891,7 @@ func (s *ChatToResponsesStreamState) toolOutput(tool *chatToResponsesStreamTool,
 			Status: status,
 			CallId: tool.callID(),
 			Name:   tool.Name,
-			Input:  chatArgumentsRawMessage(customToolInputFromArguments(tool.Arguments.String())),
+			Input:  chatArgumentsRawMessage(CustomToolInputFromArguments(tool.Arguments.String())),
 		}
 	}
 	name, namespace := restoreResponsesNamespace(tool.Name, s.NamespaceRefs)

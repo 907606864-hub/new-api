@@ -227,7 +227,7 @@ func chatToolCallToResponsesOutput(toolCall dto.ToolCallRequest, responseID stri
 				Status: status,
 				CallId: callID,
 				Name:   toolCall.Function.Name,
-				Input:  chatArgumentsRawMessage(customToolInputFromArguments(toolCall.Function.Arguments)),
+				Input:  chatArgumentsRawMessage(CustomToolInputFromArguments(toolCall.Function.Arguments)),
 			}, nil
 		}
 		name, namespace := restoreResponsesNamespace(toolCall.Function.Name, namespaceRefs)
@@ -250,10 +250,10 @@ func chatToolCallToResponsesOutput(toolCall dto.ToolCallRequest, responseID stri
 	}, nil
 }
 
-// customToolInputFromArguments unwraps the raw custom tool input from the
-// {"input": ...} arguments a Chat function call carries. Arguments of any other
+// CustomToolInputFromArguments unwraps the raw custom tool input from the
+// {"input": ...} arguments a function call carries. Arguments of any other
 // shape are returned unchanged so the model's output is never dropped.
-func customToolInputFromArguments(arguments string) string {
+func CustomToolInputFromArguments(arguments string) string {
 	var value map[string]any
 	if err := kitutil.UnmarshalJsonStr(arguments, &value); err != nil {
 		return arguments

@@ -337,7 +337,7 @@ func TestCustomToolInputFromArguments(t *testing.T) {
 		`{"input":"\u003cdiv\u003e"}`: "<div>",
 	}
 	for arguments, want := range tests {
-		assert.Equalf(t, want, customToolInputFromArguments(arguments), "arguments %q", arguments)
+		assert.Equalf(t, want, CustomToolInputFromArguments(arguments), "arguments %q", arguments)
 	}
 }
 
