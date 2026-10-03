@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/relayconvert/convmeta"
@@ -22,7 +23,11 @@ func PrepareNativeResponsesTools(request *dto.OpenAIResponsesRequest) (Set, erro
 			return set, fmt.Errorf("invalid Responses tools: %w", err)
 		}
 	}
-	definitions, refs, err := flattenResponsesNamespaceTools(rawTools, true)
+	usedNames, historyRefs, err := nativeResponsesHistoryToolNames(request.Input)
+	if err != nil {
+		return set, err
+	}
+	definitions, refs, err := flattenResponsesNamespaceTools(rawTools, true, usedNames)
 	if err != nil {
 		return set, err
 	}
@@ -34,6 +39,32 @@ func PrepareNativeResponsesTools(request *dto.OpenAIResponsesRequest) (Set, erro
 			}
 			definitions = append(definitions, definition)
 		}
+	}
+	// A client can remove tools between turns while retaining their calls in
+	// history. Keep those identities distinct without re-enabling any tool.
+	knownRefs := make(map[NamespaceRef]bool, len(refs))
+	for name, ref := range refs {
+		usedNames[name] = struct{}{}
+		knownRefs[ref] = true
+	}
+	for _, definition := range definitions {
+		var tool map[string]json.RawMessage
+		if kitutil.Unmarshal(definition.Raw, &tool) == nil {
+			if name := rawToolName(tool); name != "" {
+				usedNames[name] = struct{}{}
+			}
+		}
+	}
+	for _, ref := range historyRefs {
+		if knownRefs[ref] {
+			continue
+		}
+		if refs == nil {
+			refs = make(map[string]NamespaceRef)
+		}
+		name := responsesFlattenedToolName(ref.Namespace, ref.Name, usedNames)
+		refs[name] = ref
+		knownRefs[ref] = true
 	}
 	set.Definitions, set.NamespaceRefs = definitions, refs
 	customTools, _ := openAIChatCustomTools(set)
@@ -68,6 +99,36 @@ func PrepareNativeResponsesTools(request *dto.OpenAIResponsesRequest) (Set, erro
 	}
 	request.ToolChoice = rewriteNativeCustomChoice(request.ToolChoice, OpenAIChatCustomToolNames(set))
 	return set, nil
+}
+
+func nativeResponsesHistoryToolNames(input json.RawMessage) (map[string]struct{}, []NamespaceRef, error) {
+	plainNames := make(map[string]struct{})
+	if kitutil.GetJsonType(input) != "array" {
+		return plainNames, nil, nil
+	}
+	var items []map[string]json.RawMessage
+	if err := kitutil.Unmarshal(input, &items); err != nil {
+		return nil, nil, err
+	}
+	var refs []NamespaceRef
+	for _, item := range items {
+		switch rawToolType(item) {
+		case "function_call", "custom_tool_call", "function_call_output", "custom_tool_call_output":
+		default:
+			continue
+		}
+		name := rawToolName(item)
+		if name == "" {
+			continue
+		}
+		namespace := strings.TrimSpace(kitutil.JsonRawMessageToString(item["namespace"]))
+		if namespace == "" {
+			plainNames[name] = struct{}{}
+		} else {
+			refs = append(refs, NamespaceRef{Namespace: namespace, Name: name})
+		}
+	}
+	return plainNames, refs, nil
 }
 
 func rewriteNativeCustomHistory(raw json.RawMessage) (json.RawMessage, error) {

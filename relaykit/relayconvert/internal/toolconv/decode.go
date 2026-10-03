@@ -142,7 +142,7 @@ func extractOpenAIResponsesRequest(request any) (any, Set, error) {
 		if err := kitutil.Unmarshal(source.Tools, &rawTools); err != nil {
 			return nil, Set{}, fmt.Errorf("invalid Responses tools: %w", err)
 		}
-		if definitions, refs, err := flattenResponsesNamespaceTools(rawTools, false); err != nil {
+		if definitions, refs, err := flattenResponsesNamespaceTools(rawTools, false, nil); err != nil {
 			return nil, Set{}, fmt.Errorf("invalid Responses tools: %w", err)
 		} else if refs != nil {
 			set.Definitions = definitions

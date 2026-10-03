@@ -12,6 +12,7 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 func TestGetRequestURLClaude(t *testing.T) {
@@ -261,4 +262,85 @@ func TestNativeResponsesPlainSearchAndRetryState(t *testing.T) {
 	assert.Nil(t, info.ResponsesNamespaceTools())
 	assert.Nil(t, info.ResponsesToolState())
 	assert.False(t, strings.Contains(string(got.Tools), "namespace"))
+}
+
+func TestNativeResponsesToolsPreserveExactNumbers(t *testing.T) {
+	req := dto.OpenAIResponsesRequest{Model: "grok-4.7", Tools: json.RawMessage(`[
+		{"type":"function","name":"echo","parameters":{"type":"object","properties":{"max_output_tokens":{"type":"number","maximum":9007199254740993},"value":{"type":"integer","enum":[9007199254740993,9223372036854775807]},"nested":{"type":"object","properties":{"yield_time_ms":{"type":"number","minimum":-9007199254740993}}}},"extension":{"decimal":1.23000,"tiny":1.23e-99}}},
+		{"type":"web_search","external_web_access":true,"extension":{"id":9007199254740993,"decimal":1.23000}},
+		{"type":"x_search","extension":{"id":9223372036854775807,"tiny":1.23e-99}},
+		{"type":"tool_search"}
+	]`)}
+	converted, err := (&Adaptor{}).ConvertOpenAIResponsesRequest(nil, nil, req)
+	require.NoError(t, err)
+	body, err := common.Marshal(converted)
+	require.NoError(t, err)
+	for path, want := range map[string]string{
+		"tools.0.parameters.properties.max_output_tokens.maximum":               "9007199254740993",
+		"tools.0.parameters.properties.value.enum.0":                            "9007199254740993",
+		"tools.0.parameters.properties.value.enum.1":                            "9223372036854775807",
+		"tools.0.parameters.properties.nested.properties.yield_time_ms.minimum": "-9007199254740993",
+		"tools.0.parameters.extension.decimal":                                  "1.23000",
+		"tools.0.parameters.extension.tiny":                                     "1.23e-99",
+		"tools.1.extension.id":                                                  "9007199254740993",
+		"tools.1.extension.decimal":                                             "1.23000",
+		"tools.2.extension.id":                                                  "9223372036854775807",
+		"tools.2.extension.tiny":                                                "1.23e-99",
+	} {
+		assert.Equal(t, want, gjson.GetBytes(body, path).Raw, path)
+	}
+	assert.Equal(t, "integer", gjson.GetBytes(body, "tools.0.parameters.properties.max_output_tokens.type").String())
+	assert.Equal(t, "integer", gjson.GetBytes(body, "tools.0.parameters.properties.nested.properties.yield_time_ms.type").String())
+	assert.False(t, gjson.GetBytes(body, "tools.1.external_web_access").Exists())
+	assert.Equal(t, int64(3), gjson.GetBytes(body, "tools.#").Int())
+}
+
+func TestNativeResponsesHistoryAfterNamespaceToolsRemoved(t *testing.T) {
+	for _, tools := range []string{"", "[]", `[{"type":"function","name":"old__exec","parameters":{"type":"object"}}]`, `[{"type":"namespace","name":"old","tools":[{"type":"function","name":"exec","parameters":{"type":"object"}}]}]`} {
+		t.Run(tools, func(t *testing.T) {
+			input := json.RawMessage(`[
+				{"type":"function_call","name":"old__exec","call_id":"plain","arguments":"{}"},
+				{"type":"function_call","namespace":"old","name":"exec","call_id":"c1","arguments":"{}"},
+				{"type":"function_call_output","namespace":"old","name":"exec","call_id":"c1","output":"17"},
+				{"type":"function_call","namespace":"other","name":"exec","call_id":"c2","arguments":"{}"},
+				{"type":"custom_tool_call","namespace":"retired","name":"exec","call_id":"c3","input":"PATCH\n\"text\""},
+				{"type":"custom_tool_call_output","namespace":"retired","name":"exec","call_id":"c3","output":"26"}
+			]`)
+			info := &relaycommon.RelayInfo{}
+			converted, err := (&Adaptor{}).ConvertOpenAIResponsesRequest(nil, info, dto.OpenAIResponsesRequest{Model: "grok-4.7", Tools: json.RawMessage(tools), Input: input})
+			require.NoError(t, err)
+			got := converted.(dto.OpenAIResponsesRequest)
+			require.Len(t, info.ResponsesNamespaceTools(), 3)
+			var items []map[string]json.RawMessage
+			require.NoError(t, common.Unmarshal(got.Input, &items))
+			assert.Equal(t, "old__exec", common.JsonRawMessageToString(items[0]["name"]))
+			seen := map[string]bool{"old__exec": true}
+			for index, namespace := range map[int]string{1: "old", 3: "other", 4: "retired"} {
+				name := common.JsonRawMessageToString(items[index]["name"])
+				assert.NotEmpty(t, name)
+				assert.False(t, seen[name], "historical identities must not collide")
+				seen[name] = true
+				assert.LessOrEqual(t, len(name), 64)
+				assert.NotContains(t, items[index], "namespace")
+				assert.Equal(t, convmeta.NamespaceToolRef{Namespace: namespace, Name: "exec"}, info.ResponsesNamespaceTools()[name])
+			}
+			assert.Equal(t, items[1]["name"], items[2]["name"])
+			assert.Equal(t, items[4]["name"], items[5]["name"])
+			assert.NotContains(t, items[2], "namespace")
+			assert.NotContains(t, items[5], "namespace")
+			assert.Equal(t, `"function_call"`, string(items[4]["type"]))
+			assert.Equal(t, `"function_call_output"`, string(items[5]["type"]))
+			assert.JSONEq(t, `{"input":"PATCH\n\"text\""}`, common.JsonRawMessageToString(items[4]["arguments"]))
+			assert.Nil(t, info.ResponsesToolState(), "historical custom tools must not become current declarations")
+			if tools == "" || tools == "[]" {
+				assert.Empty(t, got.Tools, "do not re-enable removed tools")
+			} else if strings.Contains(tools, `"type":"namespace"`) {
+				assert.Equal(t, int64(1), gjson.GetBytes(got.Tools, "#").Int())
+				assert.Equal(t, common.JsonRawMessageToString(items[1]["name"]), gjson.GetBytes(got.Tools, "0.name").String())
+			} else {
+				assert.JSONEq(t, tools, string(got.Tools))
+			}
+			assert.Contains(t, string(input), `"namespace":"old"`, "retry input must stay unchanged")
+		})
+	}
 }

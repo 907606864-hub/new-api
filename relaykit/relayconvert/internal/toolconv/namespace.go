@@ -33,7 +33,7 @@ const (
 // Native Responses adapters can also retain custom tools for conversion to
 // functions. Other protocol conversions keep their existing function-only
 // behavior. Without a namespace group the nil map leaves tools untouched.
-func flattenResponsesNamespaceTools(rawTools []json.RawMessage, includeCustom bool) ([]Definition, map[string]NamespaceRef, error) {
+func flattenResponsesNamespaceTools(rawTools []json.RawMessage, includeCustom bool, reservedNames map[string]struct{}) ([]Definition, map[string]NamespaceRef, error) {
 	if len(rawTools) == 0 {
 		return nil, nil, nil
 	}
@@ -54,6 +54,9 @@ func flattenResponsesNamespaceTools(rawTools []json.RawMessage, includeCustom bo
 	// Flattened names must not collide with any peer tool name, whatever the
 	// peer's type, so register them all before flattening.
 	used := map[string]struct{}{}
+	for name := range reservedNames {
+		used[name] = struct{}{}
+	}
 	for _, tool := range tools {
 		if name := rawToolName(tool); name != "" {
 			used[name] = struct{}{}

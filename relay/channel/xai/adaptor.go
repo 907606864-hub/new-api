@@ -187,13 +187,13 @@ func sanitizeXAIResponsesTools(raw []byte) ([]byte, error) {
 	if len(raw) == 0 || string(raw) == "null" {
 		return raw, nil
 	}
-	var tools []map[string]any
+	var tools []map[string]json.RawMessage
 	if err := common.Unmarshal(raw, &tools); err != nil {
 		return nil, err
 	}
-	sanitized := make([]map[string]any, 0, len(tools))
+	sanitized := make([]map[string]json.RawMessage, 0, len(tools))
 	for _, tool := range tools {
-		toolType := strings.TrimSpace(common.Interface2String(tool["type"]))
+		toolType := strings.TrimSpace(common.JsonRawMessageToString(tool["type"]))
 		switch toolType {
 		case "tool_search":
 			continue
@@ -201,8 +201,10 @@ func sanitizeXAIResponsesTools(raw []byte) ([]byte, error) {
 			delete(tool, "external_web_access")
 			sanitized = append(sanitized, tool)
 		default:
-			if params, ok := tool["parameters"].(map[string]any); ok {
+			var params map[string]json.RawMessage
+			if common.Unmarshal(tool["parameters"], &params) == nil && params != nil {
 				normalizeIntegerParameters(params)
+				tool["parameters"], _ = common.Marshal(params)
 			}
 			sanitized = append(sanitized, tool)
 		}
@@ -213,24 +215,28 @@ func sanitizeXAIResponsesTools(raw []byte) ([]byte, error) {
 	return common.Marshal(sanitized)
 }
 
-func normalizeIntegerParameters(schema map[string]any) {
-	for k, v := range schema {
-		if k == "properties" {
-			if props, ok := v.(map[string]any); ok {
-				for propName, propVal := range props {
-					if pMap, ok := propVal.(map[string]any); ok {
-						t := common.Interface2String(pMap["type"])
-						pLower := strings.ToLower(propName)
-						if t == "number" && isIntegerFieldName(pLower) {
-							pMap["type"] = "integer"
-						}
-						normalizeIntegerParameters(pMap)
-					}
-				}
-			}
-		} else if vMap, ok := v.(map[string]any); ok {
-			normalizeIntegerParameters(vMap)
+func normalizeIntegerParameters(schema map[string]json.RawMessage) {
+	for k, raw := range schema {
+		var object map[string]json.RawMessage
+		if common.Unmarshal(raw, &object) != nil || object == nil {
+			continue
 		}
+		if k == "properties" {
+			for propName, propRaw := range object {
+				var property map[string]json.RawMessage
+				if common.Unmarshal(propRaw, &property) != nil || property == nil {
+					continue
+				}
+				if common.JsonRawMessageToString(property["type"]) == "number" && isIntegerFieldName(strings.ToLower(propName)) {
+					property["type"] = json.RawMessage(`"integer"`)
+				}
+				normalizeIntegerParameters(property)
+				object[propName], _ = common.Marshal(property)
+			}
+		} else {
+			normalizeIntegerParameters(object)
+		}
+		schema[k], _ = common.Marshal(object)
 	}
 }
 
