@@ -5,7 +5,6 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/relayconvert/convmeta"
 	oaichat "github.com/QuantumNous/new-api/relaykit/relayconvert/internal/oai_chat"
 	"github.com/QuantumNous/new-api/relaykit/relayconvert/internal/toolconv"
-	"github.com/QuantumNous/new-api/relaykit/types"
 )
 
 // PrepareNativeResponsesTools adapts namespaces and freeform tools for a
@@ -18,7 +17,7 @@ func PrepareNativeResponsesTools(info convmeta.Meta, request *dto.OpenAIResponse
 	}
 	if info != nil {
 		info.SetResponsesNamespaceTools(namespaceToolRefs(tools.NamespaceRefs))
-		info.SetResponsesToolState(responsesToolState(types.RelayFormatOpenAI, tools))
+		info.SetResponsesToolState(responsesToolState(tools))
 	}
 	return nil
 }

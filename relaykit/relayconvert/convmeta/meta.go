@@ -113,7 +113,7 @@ type ResponsesToolState struct {
 }
 
 // CustomToolInputArgument is the single function argument that carries a
-// Responses custom tool input through a function-only upstream.
+// Responses custom tool input through an upstream function call.
 const CustomToolInputArgument = "input"
 
 // IsCustomTool reports whether name was encoded from a Responses custom tool.

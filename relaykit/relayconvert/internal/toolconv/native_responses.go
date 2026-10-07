@@ -67,7 +67,7 @@ func PrepareNativeResponsesTools(request *dto.OpenAIResponsesRequest) (Set, erro
 		knownRefs[ref] = true
 	}
 	set.Definitions, set.NamespaceRefs = definitions, refs
-	customTools, _ := openAIChatCustomTools(set)
+	customTools, _ := responsesCustomTools(set)
 	if refs != nil || len(customTools) > 0 {
 		rawTools = make([]json.RawMessage, 0, len(definitions))
 		for index, definition := range definitions {
@@ -97,7 +97,7 @@ func PrepareNativeResponsesTools(request *dto.OpenAIResponsesRequest) (Set, erro
 	if err != nil {
 		return set, err
 	}
-	request.ToolChoice = rewriteNativeCustomChoice(request.ToolChoice, OpenAIChatCustomToolNames(set))
+	request.ToolChoice = rewriteNativeCustomChoice(request.ToolChoice, ResponsesCustomToolNames(set))
 	return set, nil
 }
 
