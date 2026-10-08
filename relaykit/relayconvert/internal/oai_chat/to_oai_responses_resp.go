@@ -223,17 +223,18 @@ func chatToolCallToResponsesOutput(toolCall dto.ToolCallRequest, responseID stri
 		callID = fmt.Sprintf("%s_call_%d", responseID, index)
 	}
 	if toolCall.Type == "" || toolCall.Type == "function" {
+		name, namespace := restoreResponsesNamespace(toolCall.Function.Name, namespaceRefs, tools)
 		if tools.IsCustomTool(toolCall.Function.Name) {
 			return dto.ResponsesOutput{
-				Type:   responsesOutputTypeCustomToolCall,
-				ID:     callID,
-				Status: status,
-				CallId: callID,
-				Name:   toolCall.Function.Name,
-				Input:  chatArgumentsRawMessage(CustomToolInputFromArguments(toolCall.Function.Arguments)),
+				Type:      responsesOutputTypeCustomToolCall,
+				ID:        callID,
+				Status:    status,
+				CallId:    callID,
+				Name:      name,
+				Namespace: namespace,
+				Input:     chatArgumentsRawMessage(CustomToolInputFromArguments(toolCall.Function.Arguments)),
 			}, nil
 		}
-		name, namespace := restoreResponsesNamespace(toolCall.Function.Name, namespaceRefs)
 		return dto.ResponsesOutput{
 			Type:      responsesOutputTypeFunctionCall,
 			ID:        callID,
@@ -318,13 +319,15 @@ func stringPtr(v string) *string {
 }
 
 // restoreResponsesNamespace returns the original nested name and namespace
-// when the upstream model called a flattened tool from this request. A miss
-// leaves the name unchanged and the namespace empty, which omitempty keeps
-// out of the wire payload.
-func restoreResponsesNamespace(name string, refs map[string]convmeta.NamespaceToolRef) (string, string) {
-	ref, ok := refs[name]
-	if !ok {
-		return name, ""
+// when the upstream model called a flattened tool from this request: the
+// map built from the request's own namespace tools first, then the
+// namespaces the shared tool encoder recorded (additional_tools items). A
+// miss leaves the name unchanged and the namespace empty, which omitempty
+// keeps out of the wire payload.
+func restoreResponsesNamespace(name string, refs map[string]convmeta.NamespaceToolRef, tools *convmeta.ResponsesToolState) (string, string) {
+	if ref, ok := refs[name]; ok {
+		return ref.Name, ref.Namespace
 	}
-	return ref.Name, ref.Namespace
+	namespace, restored := tools.ResponsesToolName(name)
+	return restored, namespace
 }

@@ -100,6 +100,9 @@ func isTemperatureOneOnlyModel(model string) bool {
 	return strings.EqualFold(model, "kimi-k2.6")
 }
 
+// ConvertOpenAIResponsesRequest forwards Responses requests to Kimi's native
+// /v1/responses (kimi-k3 only today; other models are rejected by the
+// upstream, not here) after rewriting the tools and effort Kimi rejects.
 func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommon.RelayInfo, request dto.OpenAIResponsesRequest) (any, error) {
 	if request.Model == "" && info != nil {
 		request.Model = info.UpstreamModelName

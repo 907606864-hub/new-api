@@ -51,6 +51,10 @@ type ChatToResponsesStreamState struct {
 	text               strings.Builder
 	annotations        []any
 	reasoning          strings.Builder
+	// usageText collects every text, reasoning, and tool argument delta sent
+	// to the client. It is the missing-usage estimate and tells whether any
+	// output reached the client.
+	usageText strings.Builder
 	// A mid-stream finish_reason closes the message and reasoning items. Deltas that
 	// arrive afterwards open a fresh item (next segment ordinal) instead of touching the
 	// closed one; the closed items are snapshotted so the final response keeps them.
@@ -405,12 +409,13 @@ func (s *ChatToResponsesStreamState) UsageText() string {
 	if s == nil {
 		return ""
 	}
-	return s.text.String()
+	return s.usageText.String()
 }
 
 func (s *ChatToResponsesStreamState) appendTextDelta(delta string) []ChatToResponsesStreamEvent {
 	events := s.startText()
 	s.text.WriteString(delta)
+	s.usageText.WriteString(delta)
 	events = append(events, s.event(responsesEventOutputTextDelta, dto.ResponsesStreamResponse{
 		Type:         responsesEventOutputTextDelta,
 		OutputIndex:  intPtr(s.textOutputIndex),
@@ -502,6 +507,7 @@ func (s *ChatToResponsesStreamState) appendReasoningDelta(delta string) []ChatTo
 		}))
 	}
 	s.reasoning.WriteString(delta)
+	s.usageText.WriteString(delta)
 	events = append(events, s.event(responsesEventReasoningSummaryDelta, dto.ResponsesStreamResponse{
 		Type:         responsesEventReasoningSummaryDelta,
 		OutputIndex:  intPtr(s.reasoningIndex),
@@ -559,6 +565,10 @@ func (s *ChatToResponsesStreamState) appendToolCallDelta(toolCall dto.ToolCallRe
 		events = append(events, s.announceTool(tool))
 		delta = tool.Arguments.String()
 	}
+	if tool.Announced {
+		// Announced calls reach the client; custom tool input at completion.
+		s.usageText.WriteString(delta)
+	}
 	// Custom tool input is unwrapped from the complete arguments at the end.
 	if tool.Announced && !tool.Custom && delta != "" {
 		events = append(events, s.event(responsesEventFunctionArgsDelta, dto.ResponsesStreamResponse{
@@ -578,20 +588,20 @@ func (s *ChatToResponsesStreamState) announceTool(tool *chatToResponsesStreamToo
 	tool.OutputIndex = s.nextIndex(chatToResponsesOutputRef{Kind: "tool", ToolIndex: tool.ChatIndex})
 	// Classify the upstream name before restoring a possibly identical nested name.
 	tool.Custom = s.Tools.IsCustomTool(tool.Name)
+	name, namespace := restoreResponsesNamespace(tool.Name, s.NamespaceRefs, s.Tools)
 	item := &dto.ResponsesOutput{
 		Type:      responsesOutputTypeFunctionCall,
 		ID:        tool.ItemID,
 		Status:    "in_progress",
 		CallId:    tool.callID(),
-		Name:      tool.Name,
+		Name:      name,
+		Namespace: namespace,
 		Arguments: []byte(`""`),
 	}
 	if tool.Custom {
 		item.Type = responsesOutputTypeCustomToolCall
 		item.Arguments = nil
 		item.Input = []byte(`""`)
-	} else {
-		item.Name, item.Namespace = restoreResponsesNamespace(tool.Name, s.NamespaceRefs)
 	}
 	return s.event(responsesEventOutputItemAdded, dto.ResponsesStreamResponse{
 		Type:        responsesEventOutputItemAdded,
@@ -702,7 +712,7 @@ func (s *ChatToResponsesStreamState) doneDeltaEvents() []ChatToResponsesStreamEv
 			}
 			if s.EmitSequenceNumber {
 				argumentsDone.Arguments = kitutil.GetPointer(tool.Arguments.String())
-				argumentsDone.Name, argumentsDone.Namespace = restoreResponsesNamespace(tool.Name, s.NamespaceRefs)
+				argumentsDone.Name, argumentsDone.Namespace = restoreResponsesNamespace(tool.Name, s.NamespaceRefs, s.Tools)
 			}
 			events = append(events, s.event(responsesEventFunctionArgsDone, argumentsDone))
 		}
@@ -886,17 +896,18 @@ func (s *ChatToResponsesStreamState) reasoningOutput(status string) *dto.Respons
 }
 
 func (s *ChatToResponsesStreamState) toolOutput(tool *chatToResponsesStreamTool, status string) *dto.ResponsesOutput {
+	name, namespace := restoreResponsesNamespace(tool.Name, s.NamespaceRefs, s.Tools)
 	if tool.Custom {
 		return &dto.ResponsesOutput{
-			Type:   responsesOutputTypeCustomToolCall,
-			ID:     tool.ItemID,
-			Status: status,
-			CallId: tool.callID(),
-			Name:   tool.Name,
-			Input:  chatArgumentsRawMessage(CustomToolInputFromArguments(tool.Arguments.String())),
+			Type:      responsesOutputTypeCustomToolCall,
+			ID:        tool.ItemID,
+			Status:    status,
+			CallId:    tool.callID(),
+			Name:      name,
+			Namespace: namespace,
+			Input:     chatArgumentsRawMessage(CustomToolInputFromArguments(tool.Arguments.String())),
 		}
 	}
-	name, namespace := restoreResponsesNamespace(tool.Name, s.NamespaceRefs)
 	return &dto.ResponsesOutput{
 		Type:      responsesOutputTypeFunctionCall,
 		ID:        tool.ItemID,

@@ -8,6 +8,8 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -132,4 +134,26 @@ func TestConvertOpenAIResponsesRequestToolsSanitization(t *testing.T) {
 	require.NotNil(t, tools[1]["parameters"])
 
 	require.Equal(t, "web_search", tools[2]["type"])
+}
+
+// Kimi serves OpenAI Responses natively (kimi-k3); the body is forwarded
+// unchanged and other models are rejected by the upstream.
+func TestResponsesRequestPassesThroughToV1Responses(t *testing.T) {
+	const body = `{"model":"kimi-k3","input":"Latest Go release?","tools":[{"type":"web_search"}],"stream":false}`
+	info := &relaycommon.RelayInfo{
+		RelayMode:   constant.RelayModeResponses,
+		RelayFormat: types.RelayFormatOpenAIResponses,
+		ChannelMeta: &relaycommon.ChannelMeta{ChannelBaseUrl: "https://api.moonshot.invalid", UpstreamModelName: "kimi-k3"},
+	}
+	url, err := (&Adaptor{}).GetRequestURL(info)
+	require.NoError(t, err)
+	assert.Equal(t, "https://api.moonshot.invalid/v1/responses", url)
+
+	var request dto.OpenAIResponsesRequest
+	require.NoError(t, common.UnmarshalJsonStr(body, &request))
+	converted, err := (&Adaptor{}).ConvertOpenAIResponsesRequest(nil, info, request)
+	require.NoError(t, err)
+	wire, err := common.Marshal(converted)
+	require.NoError(t, err)
+	assert.JSONEq(t, body, string(wire))
 }

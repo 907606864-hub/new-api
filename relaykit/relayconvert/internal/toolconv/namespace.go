@@ -30,9 +30,9 @@ const (
 
 // flattenResponsesNamespaceTools expands type=namespace groups into one
 // function definition per nested function, named "<namespace>__<name>".
-// Native Responses adapters can also retain custom tools for conversion to
-// functions. Other protocol conversions keep their existing function-only
-// behavior. Without a namespace group the nil map leaves tools untouched.
+// With includeCustom, nested custom tools are kept too, for callers that
+// send custom tools as functions. Without a namespace group the nil map
+// leaves tools untouched.
 func flattenResponsesNamespaceTools(rawTools []json.RawMessage, includeCustom bool, reservedNames map[string]struct{}) ([]Definition, map[string]NamespaceRef, error) {
 	if len(rawTools) == 0 {
 		return nil, nil, nil
