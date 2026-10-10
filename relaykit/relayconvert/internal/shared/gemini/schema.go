@@ -58,6 +58,7 @@ func cleanGeminiFunctionParametersWithDepth(params interface{}, depth int) inter
 		}
 
 		normalizeGeminiSchemaTypeAndNullable(cleanedMap)
+		dropNonStringGeminiEnum(cleanedMap)
 
 		if props, ok := cleanedMap["properties"].(map[string]interface{}); ok && props != nil {
 			cleanedProps := make(map[string]interface{})
@@ -104,6 +105,7 @@ func cleanGeminiFunctionParametersShallow(params interface{}) interface{} {
 			}
 		}
 		normalizeGeminiSchemaTypeAndNullable(cleanedMap)
+		dropNonStringGeminiEnum(cleanedMap)
 		delete(cleanedMap, "properties")
 		delete(cleanedMap, "items")
 		delete(cleanedMap, "anyOf")
@@ -175,6 +177,33 @@ func normalizeGeminiSchemaTypeAndNullable(schema map[string]interface{}) {
 			delete(schema, "type")
 		}
 	}
+}
+
+// dropNonStringGeminiEnum removes enum when it holds non-string values
+// (e.g. {"type":"boolean","enum":[true]}); Gemini's Schema.enum is a string
+// list and rejects the whole request otherwise. null entries are dropped
+// since nullable already carries them.
+func dropNonStringGeminiEnum(schema map[string]interface{}) {
+	values, ok := schema["enum"].([]interface{})
+	if !ok {
+		return
+	}
+	kept := make([]interface{}, 0, len(values))
+	for _, value := range values {
+		if value == nil {
+			continue
+		}
+		if _, isString := value.(string); !isString {
+			delete(schema, "enum")
+			return
+		}
+		kept = append(kept, value)
+	}
+	if len(kept) == 0 {
+		delete(schema, "enum")
+		return
+	}
+	schema["enum"] = kept
 }
 
 func RemoveAdditionalProperties(schema interface{}, depth int) interface{} {
