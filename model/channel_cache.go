@@ -58,6 +58,11 @@ func InitChannelCache() {
 		}
 		groups := strings.SplitSeq(channel.Group, ",")
 		for group := range groups {
+			if newGroup2model2channels[group] == nil {
+				// Channels and abilities are read in separate queries, so a group can
+				// be missing from abilities while they are being rewritten.
+				newGroup2model2channels[group] = make(map[string][]int)
+			}
 			models := channel.GetModels()
 			for _, model := range models {
 				if _, ok := newGroup2model2channels[group][model]; !ok {
