@@ -37,6 +37,7 @@ import {
   vi,
 } from 'vitest'
 
+import { CommandMenu } from '@/components/command-menu'
 import { SidebarProvider } from '@/components/ui/sidebar'
 import { DirectionProvider } from '@/context/direction-provider'
 import { LayoutProvider } from '@/context/layout-provider'
@@ -173,6 +174,7 @@ describe('appearance controls', () => {
       component: () => (
         <SearchProvider>
           <button type='button'>trigger</button>
+          <CommandMenu />
         </SearchProvider>
       ),
     })

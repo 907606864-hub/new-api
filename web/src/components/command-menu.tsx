@@ -16,8 +16,9 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useLocation, useNavigate } from '@tanstack/react-router'
+import { useNavigate } from '@tanstack/react-router'
 import { ArrowRight, ChevronRight } from 'lucide-react'
+import React from 'react'
 import { useTranslation } from 'react-i18next'
 
 import {
@@ -29,31 +30,29 @@ import {
   CommandItem,
   CommandList,
 } from '@/components/ui/command'
-import { useSidebarData } from '@/hooks/use-sidebar-data'
+import { useSearch } from '@/context/search-provider'
+import { useSidebarView } from '@/hooks/use-sidebar-view'
 
-import { getNavGroupsForPath } from './layout/lib/sidebar-view-registry'
 import { ScrollArea } from './ui/scroll-area'
 
-export function CommandMenu(props: {
-  open: boolean
-  onOpenChange: (open: boolean) => void
-}) {
+export function CommandMenu() {
   const { t } = useTranslation()
   const navigate = useNavigate()
-  const { pathname } = useLocation()
-  const sidebarData = useSidebarData()
+  const { open, setOpen } = useSearch()
+  // Offer the same pages as the sidebar, so search never lists pages the
+  // user's role or the sidebar settings hide.
+  const { navGroups } = useSidebarView()
 
-  // Use the active nested sidebar view's nav groups when one matches
-  // the current URL; otherwise fall back to the root navigation.
-  const navGroups = getNavGroupsForPath(pathname, t) ?? sidebarData.navGroups
-
-  const runCommand = (command: () => unknown) => {
-    props.onOpenChange(false)
-    command()
-  }
+  const runCommand = React.useCallback(
+    (command: () => unknown) => {
+      setOpen(false)
+      command()
+    },
+    [setOpen]
+  )
 
   return (
-    <CommandDialog modal open={props.open} onOpenChange={props.onOpenChange}>
+    <CommandDialog modal open={open} onOpenChange={setOpen}>
       <Command>
         <CommandInput placeholder={t('Type a command or search...')} />
         <CommandList>
