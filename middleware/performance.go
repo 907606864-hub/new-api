@@ -18,8 +18,11 @@ func SystemPerformanceCheck() gin.HandlerFunc {
 		path := c.Request.URL.Path
 		if strings.HasPrefix(path, "/v1/messages") {
 			if err := checkSystemPerformance(); err != nil {
+				claudeError := err.ToClaudeError()
+				claudeError.Type = "overloaded_error"
 				c.JSON(err.StatusCode, gin.H{
-					"error": err.ToClaudeError(),
+					"type":  "error",
+					"error": claudeError,
 				})
 				c.Abort()
 				return
