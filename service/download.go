@@ -63,7 +63,7 @@ func DoDownloadRequest(originUrl string, reason ...string) (resp *http.Response,
 			return nil, fmt.Errorf("request reject: %v", err)
 		}
 
-		common.SysLog(common.LogText("downloading from origin: %s, reason: %s", common.MaskSensitiveInfo(originUrl), strings.Join(reason, ", ")))
+		common.SysLog(common.LogText("downloading from origin: %s, reason: %s", common.MaskSensitiveInfo(originUrl, originUrl), strings.Join(reason, ", ")))
 		return GetSSRFProtectedHTTPClient().Get(originUrl)
 	}
 }

@@ -217,6 +217,7 @@ func UpstreamAddresses(c *gin.Context) []string {
 	// A channel without its own proxy dials through the environment proxy.
 	environmentProxy := httpproxy.FromEnvironment()
 	candidates := []string{environmentProxy.HTTPProxy, environmentProxy.HTTPSProxy}
+	candidates = append(candidates, GetContextKeyStringSlice(c, constant.ContextKeyTaskPluginAllowedHosts)...)
 	if setting, ok := GetContextKeyType[dto.ChannelSettings](c, constant.ContextKeyChannelSetting); ok {
 		candidates = append(candidates, setting.Proxy)
 	}

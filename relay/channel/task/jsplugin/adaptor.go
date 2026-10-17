@@ -122,6 +122,7 @@ func New(plugin *pluginruntime.LoadedPlugin) *TaskAdaptor { return &TaskAdaptor{
 func (a *TaskAdaptor) Init(info *relaycommon.RelayInfo)   { a.info = info }
 
 func (a *TaskAdaptor) ValidateRequestAndSetAction(c *gin.Context, info *relaycommon.RelayInfo) *dto.TaskError {
+	common.SetContextKey(c, constant.ContextKeyTaskPluginAllowedHosts, a.plugin.Meta.AllowedHosts)
 	if pinnedValue, exists := c.Get(pluginruntime.ContextKeyPinnedEndpoint); exists {
 		if pinned, ok := pinnedValue.(pluginruntime.PinnedEndpoint); ok && pinned.Plugin == a.plugin {
 			if protocolValue, present := c.Get(pluginruntime.ContextKeyProtocolRequest); present {
@@ -168,7 +169,7 @@ func (a *TaskAdaptor) ValidateRequestAndSetAction(c *gin.Context, info *relaycom
 		// utils.fetch failures in the build hook name the host fetched: the
 		// channel base URL or one of the plugin's allowed hosts, which an
 		// installed plugin may point at private hosts.
-		taskErr := service.TaskErrorWrapper(err, "plugin_request_invalid", http.StatusBadRequest, append(common.UpstreamAddresses(c), a.plugin.Meta.AllowedHosts...)...)
+		taskErr := service.TaskErrorWrapper(err, "plugin_request_invalid", http.StatusBadRequest, common.UpstreamAddresses(c)...)
 		taskErr.LocalError = true
 		return taskErr
 	}

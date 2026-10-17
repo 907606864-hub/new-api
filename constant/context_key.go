@@ -45,6 +45,10 @@ const (
 	// and for adaptors that build official endpoints themselves.
 	ContextKeyUpstreamRequestOrigin ContextKey = "upstream_request_origin"
 
+	// ContextKeyTaskPluginAllowedHosts carries admin-approved plugin hosts through
+	// all submission error paths, including upstream and response-parser failures.
+	ContextKeyTaskPluginAllowedHosts ContextKey = "task_plugin_allowed_hosts"
+
 	ContextKeyAutoGroup           ContextKey = "auto_group"
 	ContextKeyAutoGroupIndex      ContextKey = "auto_group_index"
 	ContextKeyAutoGroupRetryIndex ContextKey = "auto_group_retry_index"
