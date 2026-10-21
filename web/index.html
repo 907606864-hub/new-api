@@ -14,6 +14,14 @@
     />
 
     <meta name="theme-color" content="#fff" />
+    <!-- Apply the fixed theme before first paint so one-shot detectors
+         (e.g. Dark Reader) see the same theme as ThemeProvider. -->
+    <script>
+      ;(function () {
+        document.documentElement.classList.remove('dark')
+        document.documentElement.classList.add('light')
+      })()
+    </script>
     <!--umami-->
     <!--Google Analytics-->
   </head>
