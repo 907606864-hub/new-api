@@ -1,6 +1,7 @@
 package toolconv
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/QuantumNous/new-api/relaykit/dto"
@@ -118,7 +119,7 @@ func TestAttachGeminiRequestEnablesIncludeServerSideToolInvocations(t *testing.T
 				Function: &Function{
 					Name:        "get_weather",
 					Description: "Get weather data",
-					Parameters:  map[string]any{"type": "object"},
+					Parameters:  json.RawMessage(`{"type":"object"}`),
 				},
 			},
 		},

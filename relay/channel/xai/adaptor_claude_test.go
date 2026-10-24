@@ -295,6 +295,46 @@ func TestNativeResponsesToolsPreserveExactNumbers(t *testing.T) {
 	assert.Equal(t, int64(3), gjson.GetBytes(body, "tools.#").Int())
 }
 
+func TestNativeResponsesToolsPreserveSchemaOrder(t *testing.T) {
+	for _, schema := range []string{
+		`{"title":"keep-order","type":"object","properties":{"z_first":{"type":"string"},"a_value":{"type":"number","minimum":1.23000}},"additionalProperties":false}`,
+		`{"type":"object","properties":{"z_value":{"type":"number","minimum":1.23000},"a_count":{"type":"number","maximum":9007199254740993},"odd.name\\branch":{"type":"object","properties":{"z_value":{"type":"number"},"a_ms":{"type":"nu\u006dber","minimum":-9007199254740993}}}},"extension":{"enum":[9223372036854775807,1.23e-99]}}`,
+	} {
+		for _, namespace := range []bool{false, true} {
+			name := "plain"
+			function := `{"type":"function","name":"echo","parameters":` + schema + `}`
+			tools := `[` + function + `,{"type":"custom","name":"edit"}]`
+			if namespace {
+				name = "namespace"
+				tools = `[{"type":"namespace","name":"math","tools":` + tools + `}]`
+			}
+			t.Run(name+"/"+schema, func(t *testing.T) {
+				req := dto.OpenAIResponsesRequest{Model: "grok-4.7", Tools: json.RawMessage(tools)}
+				converted, err := (&Adaptor{}).ConvertOpenAIResponsesRequest(nil, &relaycommon.RelayInfo{}, req)
+				require.NoError(t, err)
+				body, err := common.Marshal(converted)
+				require.NoError(t, err)
+				want := strings.ReplaceAll(schema, `"a_count":{"type":"number"`, `"a_count":{"type":"integer"`)
+				want = strings.ReplaceAll(want, `"a_ms":{"type":"nu\u006dber"`, `"a_ms":{"type":"integer"`)
+				assert.Equal(t, want, gjson.GetBytes(body, "tools.0.parameters").Raw)
+				assert.Equal(t, tools, string(req.Tools), "conversion must not mutate retry input")
+			})
+		}
+	}
+}
+
+func TestNormalizeIntegerParametersDuplicateTypeUsesLastValue(t *testing.T) {
+	for _, tc := range []struct{ schema, want string }{
+		{`{"properties":{"a_count":{"type":"string","type":"number"}}}`, `{"properties":{"a_count":{"type":"string","type":"integer"}}}`},
+		{`{"properties":{"a_count":{"type":"number","type":"string"}}}`, `{"properties":{"a_count":{"type":"number","type":"string"}}}`},
+		{`{"properties":{"a_count":{"type":"string","\u0074ype":"nu\u006dber","maximum":9007199254740993}}}`, `{"properties":{"a_count":{"type":"string","\u0074ype":"integer","maximum":9007199254740993}}}`},
+	} {
+		t.Run(tc.schema, func(t *testing.T) {
+			assert.Equal(t, tc.want, string(normalizeIntegerParameters(json.RawMessage(tc.schema))))
+		})
+	}
+}
+
 func TestNativeResponsesHistoryAfterNamespaceToolsRemoved(t *testing.T) {
 	for _, tools := range []string{"", "[]", `[{"type":"function","name":"old__exec","parameters":{"type":"object"}}]`, `[{"type":"namespace","name":"old","tools":[{"type":"function","name":"exec","parameters":{"type":"object"}}]}]`} {
 		t.Run(tools, func(t *testing.T) {

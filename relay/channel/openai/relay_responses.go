@@ -96,7 +96,14 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 		}
 		for _, payload := range toolStream.rewrite([]byte(data)) {
 			// ResponseChunkData only reads Type; do not round-trip native fields.
-			sendResponsesStreamData(c, dto.ResponsesStreamResponse{Type: gjson.GetBytes(payload, "type").String()}, string(payload))
+			if err := helper.ResponseChunkData(c, dto.ResponsesStreamResponse{Type: gjson.GetBytes(payload, "type").String()}, string(payload)); err != nil {
+				sr.Stop(err)
+				return
+			}
+		}
+		if (streamResponse.Type == "response.completed" || streamResponse.Type == "response.done") &&
+			streamResponse.Response != nil && info.StreamStatus.ResponseOutcome() == string(relaycommon.ResponseOutcomeCompleted) {
+			sr.Done()
 		}
 	})
 

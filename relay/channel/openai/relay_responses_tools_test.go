@@ -1,12 +1,15 @@
 package openai
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -115,7 +118,7 @@ func TestNativeResponsesToolsNoMappingsIsByteIdentical(t *testing.T) {
 }
 
 func TestNativeResponsesToolsResponseSnapshots(t *testing.T) {
-	for _, kind := range []string{"response.created", "response.in_progress", "response.completed", "response.incomplete"} {
+	for _, kind := range []string{"response.created", "response.in_progress", "response.completed", "response.done", "response.incomplete"} {
 		t.Run(kind, func(t *testing.T) {
 			payload := `{"type":"` + kind + `","sequence_number":7,"response":` + nativeResponsesToolsBody + `,"future":900719925474099312345}`
 			out := newResponsesToolStream(nativeResponsesToolInfo()).rewrite([]byte(payload))
@@ -336,4 +339,98 @@ func TestNativeResponsesCustomEmptyAndNonWrapperArguments(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Completion is accepted only after every rewritten payload is delivered. The
+// upstream accounting still observes function calls, not restored custom calls.
+func TestNativeResponsesToolsCompletionLifecycle(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	oldTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 1
+	t.Cleanup(func() { constant.StreamingTimeout = oldTimeout })
+
+	for _, terminal := range []string{"response.completed", "response.done"} {
+		for _, tc := range []struct {
+			name      string
+			cancel    bool
+			failWrite int
+			failFlush bool
+		}{
+			{name: "delivered without EOF"},
+			{name: "disconnect after delivered completion", cancel: true},
+			{name: "rewritten data write failure", failWrite: 2},
+			{name: "rewritten flush failure", failFlush: true},
+		} {
+			t.Run(terminal+"/"+tc.name, func(t *testing.T) {
+				payload := `{"type":"` + terminal + `","response":{"status":"completed","output":[{"type":"function_call","id":"ns","call_id":"call_ns","name":"ns__edit","arguments":"{\"input\":\"patch\"}","future":900719925474099312345}],"usage":{"input_tokens":7,"output_tokens":5,"total_tokens":12,"future":900719925474099312345}}}`
+				body := &responsesLifecycleBody{data: strings.NewReader("data: " + payload + "\n\n"), waiting: make(chan struct{}), closed: make(chan struct{}), closeErr: io.ErrClosedPipe}
+				t.Cleanup(func() { require.NoError(t, body.Close()) })
+				ctx, cancel := context.WithCancel(context.Background())
+				t.Cleanup(cancel)
+				expected := newResponsesToolStream(nativeResponsesToolInfo()).rewrite([]byte(payload))
+				require.Len(t, expected, 1)
+				writer := &responsesLifecycleWriter{ResponseRecorder: httptest.NewRecorder(), body: body, needle: string(expected[0]) + "\n\n", waitForCleanup: tc.cancel, failWrite: tc.failWrite, writeErr: errors.New("native tool write failed")}
+				if tc.cancel {
+					writer.cancel = cancel
+				}
+				if tc.failFlush {
+					writer.flushErr = writer.writeErr
+				}
+				c, _ := gin.CreateTestContext(writer)
+				c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil).WithContext(ctx)
+				info := nativeResponsesToolInfo()
+				info.IsStream, info.StartTime = true, time.Now()
+				var vendorFrames []string
+				info.VendorToolUsage = func(raw []byte) map[string]int {
+					vendorFrames = append(vendorFrames, string(raw))
+					return nil
+				}
+				resp := &http.Response{StatusCode: http.StatusOK, Body: body, Header: http.Header{"Content-Type": {"text/event-stream"}}}
+				usage, apiErr := OaiResponsesStreamHandler(c, info, resp)
+				require.Nil(t, apiErr)
+				require.NotNil(t, usage)
+				require.Equal(t, []string{payload}, vendorFrames, "vendor billing must observe the original terminal frame exactly once")
+				assert.Equal(t, "function_call", gjson.Get(vendorFrames[0], "response.output.0.type").String())
+				assert.Equal(t, "ns__edit", gjson.Get(vendorFrames[0], "response.output.0.name").String())
+				assert.Equal(t, 7, usage.PromptTokens)
+				assert.Equal(t, 5, usage.CompletionTokens)
+				assert.Equal(t, 12, usage.TotalTokens)
+				if tc.failWrite != 0 || tc.failFlush {
+					assert.Equal(t, relaycommon.StreamEndReasonHandlerStop, info.StreamStatus.EndReason)
+					assert.ErrorIs(t, info.StreamStatus.EndError, writer.writeErr)
+					return
+				}
+				assert.Equal(t, relaycommon.StreamEndReasonDone, info.StreamStatus.EndReason)
+				assert.False(t, info.StreamStatus.HasErrors())
+				wire := strings.TrimSpace(strings.SplitN(writer.Body.String(), "data: ", 2)[1])
+				assert.Equal(t, "custom_tool_call", gjson.Get(wire, "response.output.0.type").String())
+				assert.Equal(t, "ns", gjson.Get(wire, "response.output.0.namespace").String())
+				assert.Equal(t, "edit", gjson.Get(wire, "response.output.0.name").String())
+				assert.Equal(t, "patch", gjson.Get(wire, "response.output.0.input").String())
+				assert.Equal(t, "900719925474099312345", gjson.Get(wire, "response.output.0.future").Raw)
+				assert.Equal(t, gjson.Get(payload, "response.usage").Raw, gjson.Get(wire, "response.usage").Raw)
+			})
+		}
+	}
+}
+
+func TestNativeResponsesToolsStopsOnExpandedPayloadWriteFailure(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	oldTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 1
+	t.Cleanup(func() { constant.StreamingTimeout = oldTimeout })
+	payload := `{"type":"response.function_call_arguments.done","item_id":"ns","call_id":"call_ns","name":"ns__edit","arguments":"{\"input\":\"patch\"}"}`
+	body := &responsesLifecycleBody{data: strings.NewReader("data: " + payload + "\n\n"), waiting: make(chan struct{}), closed: make(chan struct{}), closeErr: io.ErrClosedPipe}
+	t.Cleanup(func() { require.NoError(t, body.Close()) })
+	writer := &responsesLifecycleWriter{ResponseRecorder: httptest.NewRecorder(), body: body, failWrite: 4, writeErr: errors.New("second rewritten event failed")}
+	c, _ := gin.CreateTestContext(writer)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	info := nativeResponsesToolInfo()
+	resp := &http.Response{StatusCode: http.StatusOK, Body: body, Header: http.Header{"Content-Type": {"text/event-stream"}}}
+	_, apiErr := OaiResponsesStreamHandler(c, info, resp)
+	require.Nil(t, apiErr)
+	assert.Equal(t, relaycommon.StreamEndReasonHandlerStop, info.StreamStatus.EndReason)
+	assert.ErrorIs(t, info.StreamStatus.EndError, writer.writeErr)
+	assert.Contains(t, writer.Body.String(), "response.custom_tool_call_input.delta")
+	assert.NotContains(t, writer.Body.String(), "response.custom_tool_call_input.done")
 }

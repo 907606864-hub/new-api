@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
@@ -22,6 +23,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/samber/lo"
+	"github.com/tidwall/gjson"
 )
 
 type Adaptor struct {
@@ -204,10 +206,8 @@ func sanitizeXAIResponsesTools(raw []byte) ([]byte, error) {
 			delete(tool, "external_web_access")
 			sanitized = append(sanitized, tool)
 		default:
-			var params map[string]json.RawMessage
-			if common.Unmarshal(tool["parameters"], &params) == nil && params != nil {
-				normalizeIntegerParameters(params)
-				tool["parameters"], _ = common.Marshal(params)
+			if parameters, exists := tool["parameters"]; exists {
+				tool["parameters"] = normalizeIntegerParameters(parameters)
 			}
 			sanitized = append(sanitized, tool)
 		}
@@ -218,29 +218,57 @@ func sanitizeXAIResponsesTools(raw []byte) ([]byte, error) {
 	return common.Marshal(sanitized)
 }
 
-func normalizeIntegerParameters(schema map[string]json.RawMessage) {
-	for k, raw := range schema {
-		var object map[string]json.RawMessage
-		if common.Unmarshal(raw, &object) != nil || object == nil {
-			continue
-		}
-		if k == "properties" {
-			for propName, propRaw := range object {
-				var property map[string]json.RawMessage
-				if common.Unmarshal(propRaw, &property) != nil || property == nil {
-					continue
-				}
-				if common.JsonRawMessageToString(property["type"]) == "number" && isIntegerFieldName(strings.ToLower(propName)) {
-					property["type"] = json.RawMessage(`"integer"`)
-				}
-				normalizeIntegerParameters(property)
-				object[propName], _ = common.Marshal(property)
-			}
-		} else {
-			normalizeIntegerParameters(object)
-		}
-		schema[k], _ = common.Marshal(object)
+func normalizeIntegerParameters(schema json.RawMessage) json.RawMessage {
+	root := gjson.ParseBytes(schema)
+	if !root.IsObject() {
+		return schema
 	}
+	var retypes []gjson.Result
+	var visit func(gjson.Result)
+	visit = func(node gjson.Result) {
+		node.ForEach(func(key, object gjson.Result) bool {
+			if !object.IsObject() {
+				return true
+			}
+			if key.String() == "properties" {
+				object.ForEach(func(name, property gjson.Result) bool {
+					if !property.IsObject() {
+						return true
+					}
+					var fieldType gjson.Result
+					property.ForEach(func(key, value gjson.Result) bool {
+						if key.String() == "type" {
+							fieldType = value
+						}
+						return true
+					})
+					if fieldType.String() == "number" && isIntegerFieldName(strings.ToLower(name.String())) {
+						retypes = append(retypes, fieldType)
+					}
+					visit(property)
+					return true
+				})
+			} else {
+				visit(object)
+			}
+			return true
+		})
+	}
+	visit(root)
+	if len(retypes) == 0 {
+		return schema
+	}
+	// Only replace type literals; maps would reorder schema properties and
+	// rebuilding values could alter large integers or decimal spellings.
+	slices.SortFunc(retypes, func(a, b gjson.Result) int { return a.Index - b.Index })
+	normalized := make(json.RawMessage, 0, len(schema))
+	last := 0
+	for _, fieldType := range retypes {
+		normalized = append(normalized, schema[last:fieldType.Index]...)
+		normalized = append(normalized, `"integer"`...)
+		last = fieldType.Index + len(fieldType.Raw)
+	}
+	return append(normalized, schema[last:]...)
 }
 
 // Codex declares integer-valued fields such as max_output_tokens and

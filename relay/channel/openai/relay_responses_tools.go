@@ -123,7 +123,7 @@ func (s *responsesToolStream) rewrite(payload []byte) [][]byte {
 			}
 		}
 		payload = rewriteResponsesToolItem(s.info, payload, "item")
-	case "response.created", "response.in_progress", "response.completed", "response.incomplete":
+	case "response.created", "response.in_progress", "response.completed", "response.done", "response.incomplete":
 		payload = rewriteResponsesOutputTools(s.info, payload, "response.output")
 	case "response.function_call_arguments.delta", "response.function_call_arguments.done":
 		call := s.call(payload, gjson.GetBytes(payload, "name").String())
