@@ -5,6 +5,9 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"fmt"
+	"image"
+	"image/color"
+	"image/draw"
 	"image/png"
 	"io"
 	"net"
@@ -12,6 +15,8 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -457,9 +462,21 @@ func TestGatewayImageBilling(t *testing.T) {
 	require.NotEmpty(t, key)
 	t.Cleanup(func() { api(t, "DELETE", tokenPath, admin, nil) })
 
-	var calls, returned, upstreamStatus, receivedQuantity atomic.Int64
-	var subscriptionBody atomic.Value
-	subscriptionBody.Store(`{"active":true,"tier":3,"expiresAt":2147483647,"usage":{"isNegative":false}}`)
+	var calls, retryCalls, returned, upstreamStatus, retryStatus, receivedQuantity atomic.Int64
+	var subscriptionBody, retrySubscriptionBody atomic.Value
+	const activeOpus = `{"active":true,"tier":3,"expiresAt":2147483647,"usage":{"isNegative":false}}`
+	subscriptionBody.Store(activeOpus)
+	retrySubscriptionBody.Store(activeOpus)
+	type generationGate struct {
+		entered chan struct{}
+		release chan struct{}
+	}
+	var gate atomic.Pointer[generationGate]
+	fixtureImage := image.NewRGBA(image.Rect(0, 0, 832, 1216))
+	draw.Draw(fixtureImage, fixtureImage.Bounds(), image.NewUniform(color.RGBA{R: 96, G: 160, B: 112, A: 255}), image.Point{}, draw.Src)
+	draw.Draw(fixtureImage, image.Rect(128, 192, 704, 1024), image.NewUniform(color.RGBA{R: 232, G: 192, B: 224, A: 255}), image.Point{}, draw.Src)
+	var fixturePNG bytes.Buffer
+	require.NoError(t, png.Encode(&fixturePNG, fixtureImage))
 	returned.Store(1)
 	upstreamStatus.Store(http.StatusCreated)
 	bind := os.Getenv("NAI_FIXTURE_BIND")
@@ -471,14 +488,23 @@ func TestGatewayImageBilling(t *testing.T) {
 	ip := listener.Addr().(*net.TCPAddr).IP
 	require.True(t, ip.IsLoopback() || ip.IsPrivate(), "fixture must not listen on a public interface")
 	fixture := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/user/subscription" {
+		path := strings.TrimPrefix(r.URL.Path, "/retry")
+		retry := path != r.URL.Path
+		if path == "/user/subscription" {
 			assert.Equal(t, "Bearer fixture-upstream-token", r.Header.Get("Authorization"))
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = io.WriteString(w, subscriptionBody.Load().(string))
+			subscription := subscriptionBody.Load().(string)
+			if retry {
+				subscription = retrySubscriptionBody.Load().(string)
+			}
+			_, _ = io.WriteString(w, subscription)
 			return
 		}
 		calls.Add(1)
-		assert.Equal(t, "/ai/generate-image", r.URL.Path)
+		if retry {
+			retryCalls.Add(1)
+		}
+		assert.Equal(t, "/ai/generate-image", path)
 		assert.Equal(t, "Bearer fixture-upstream-token", r.Header.Get("Authorization"))
 		assert.Equal(t, "application/json", r.Header.Get("Accept"))
 		body, err := io.ReadAll(r.Body)
@@ -487,11 +513,26 @@ func TestGatewayImageBilling(t *testing.T) {
 		}
 		assert.Contains(t, []string{"nai-diffusion-4-5-full", "nai-diffusion-5-full-medium"}, gjson.GetBytes(body, "model").String())
 		receivedQuantity.Store(gjson.GetBytes(body, "parameters.n_samples").Int())
+		if barrier := gate.Load(); barrier != nil {
+			barrier.entered <- struct{}{}
+			select {
+			case <-barrier.release:
+			case <-r.Context().Done():
+				return
+			}
+		}
+		status := upstreamStatus.Load()
+		if retry {
+			status = retryStatus.Load()
+		}
+		if gjson.GetBytes(body, "input").String() == "fixture-reject" {
+			status = http.StatusBadRequest
+		}
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(int(upstreamStatus.Load()))
+		w.WriteHeader(int(status))
 		images := make([]map[string]string, returned.Load())
 		for i := range images {
-			images[i] = map[string]string{"image": "aW1hZ2U="}
+			images[i] = map[string]string{"image": base64.StdEncoding.EncodeToString(fixturePNG.Bytes())}
 		}
 		response, err := common.Marshal(map[string]any{"images": images})
 		if !assert.NoError(t, err) {
@@ -717,11 +758,265 @@ func TestGatewayImageBilling(t *testing.T) {
 			}
 		})
 	}
+	for _, tc := range []struct {
+		name       string
+		sizes      [2]string
+		quota      int
+		reject     bool
+		wantStatus []int
+		wantCalls  int
+		credits    []int64
+	}{
+		{name: "concurrent free and paid estimates stay independent", sizes: [2]string{"832x1216", "1024x1536"}, quota: 1000000, wantStatus: []int{200, 200}, wantCalls: 2, credits: []int64{0, 26}},
+		{name: "concurrent requests cannot overspend one image quota", sizes: [2]string{"1024x1536", "1024x1536"}, quota: 32500, wantStatus: []int{200, 403}, wantCalls: 1, credits: []int64{26}},
+		{name: "concurrent failed image refunds without refunding success", sizes: [2]string{"1024x1536", "1024x1536"}, quota: 1000000, reject: true, wantStatus: []int{200, 400}, wantCalls: 2, credits: []int64{26}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			subscriptionBody.Store(activeOpus)
+			returned.Store(1)
+			upstreamStatus.Store(http.StatusCreated)
+			api(t, "PUT", "/api/channel/", admin, map[string]any{"id": channelID, "type": constant.ChannelTypeNovelAI, "param_override": "{}"})
+			api(t, "PUT", "/api/token/", admin, map[string]any{"id": tokenID, "name": "nai-gateway-test", "remain_quota": tc.quota, "expired_time": -1, "group": "default"})
+			before := balances(t)
+			logsBefore := api(t, "GET", "/api/log/?type=2&token_name=nai-gateway-test", admin, nil).Get("total").Int()
+			callCount := calls.Load()
+			barrier := &generationGate{entered: make(chan struct{}, 2), release: make(chan struct{})}
+			gate.Store(barrier)
+			defer gate.Store(nil)
+			defer func() {
+				select {
+				case <-barrier.release:
+				default:
+					close(barrier.release)
+				}
+			}()
+			type result struct {
+				status int
+				body   []byte
+				err    error
+			}
+			results := make(chan result, 2)
+			start := make(chan struct{})
+			for i, size := range tc.sizes {
+				prompt := "a landscape"
+				if tc.reject && i == 0 {
+					prompt = "fixture-reject"
+				}
+				body, err := common.Marshal(map[string]any{"model": estimated, "prompt": prompt, "size": size, "n": 1})
+				require.NoError(t, err)
+				req, err := http.NewRequest("POST", base+"/v1/images/generations", bytes.NewReader(body))
+				require.NoError(t, err)
+				req.Header.Set("Content-Type", "application/json")
+				req.Header.Set("Authorization", "Bearer "+key)
+				go func() {
+					<-start
+					response, err := client.Do(req)
+					if err != nil {
+						results <- result{err: err}
+						return
+					}
+					defer response.Body.Close()
+					data, err := io.ReadAll(response.Body)
+					results <- result{status: response.StatusCode, body: data, err: err}
+				}()
+			}
+			close(start)
+			for range tc.wantCalls {
+				select {
+				case <-barrier.entered:
+				case <-time.After(10 * time.Second):
+					t.Fatal("reserved requests did not reach the upstream barrier")
+				}
+			}
+			statuses := []int{}
+			// Keep the winner's reservation pending until the competing request
+			// is rejected; success must not accidentally serialize this test.
+			if tc.wantCalls == 1 {
+				select {
+				case response := <-results:
+					require.NoError(t, response.err)
+					require.Equal(t, http.StatusForbidden, response.status)
+					statuses = append(statuses, response.status)
+				case <-time.After(10 * time.Second):
+					t.Fatal("competing request was not rejected before settlement")
+				}
+			}
+			close(barrier.release)
+			for len(statuses) < 2 {
+				response := <-results
+				require.NoError(t, response.err)
+				statuses = append(statuses, response.status)
+				if response.status == http.StatusOK {
+					assert.Len(t, gjson.GetBytes(response.body, "data").Array(), 1)
+				}
+			}
+			assert.ElementsMatch(t, tc.wantStatus, statuses)
+			assert.Equal(t, int64(tc.wantCalls), calls.Load()-callCount)
+			charge := int64(0)
+			for _, credits := range tc.credits {
+				charge += credits * 1250
+			}
+			want := [6]int64{before[0] - charge, before[1] + charge, before[2] + int64(len(tc.credits)), before[3] - charge, before[4] + charge, before[5] + charge}
+			require.Eventually(t, func() bool { return balances(t) == want }, 5*time.Second, 100*time.Millisecond)
+			logs := api(t, "GET", "/api/log/?type=2&token_name=nai-gateway-test", admin, nil)
+			require.Equal(t, logsBefore+int64(len(tc.credits)), logs.Get("total").Int(), "only successful requests get one consume log each")
+			loggedCredits := []int64{}
+			for _, entry := range logs.Get("items").Array()[:len(tc.credits)] {
+				credits := gjson.Get(entry.Get("other").String(), "image_credits").Int()
+				loggedCredits = append(loggedCredits, credits)
+				assert.Equal(t, credits*1250, entry.Get("quota").Int())
+			}
+			assert.ElementsMatch(t, tc.credits, loggedCredits)
+		})
+	}
+	t.Run("channel retry refreshes the estimate and reconciles once", func(t *testing.T) {
+		api(t, "POST", "/api/channel/", admin, map[string]any{
+			"mode": "single", "channel": map[string]any{
+				"type": constant.ChannelTypeNovelAI, "name": "nai-retry-test", "key": "fixture-upstream-token",
+				"base_url": fixture.URL + "/retry", "models": estimated, "group": "default",
+				"model_mapping": string(mapping), "priority": 0, "auto_ban": 0,
+			},
+		})
+		channels := api(t, "GET", "/api/channel/", admin, nil).Get("items").Array()
+		require.Len(t, channels, 2)
+		retryID := channels[0].Get("id").Int()
+		if retryID == channelID {
+			retryID = channels[1].Get("id").Int()
+		}
+		retryPath := fmt.Sprintf("/api/channel/%d", retryID)
+		defer api(t, "DELETE", retryPath, admin, nil)
+		api(t, "PUT", "/api/option/", admin, map[string]any{"key": "RetryTimes", "value": 1})
+		defer api(t, "PUT", "/api/option/", admin, map[string]any{"key": "RetryTimes", "value": 0})
+		const large = `{"operations":[{"path":"parameters.width","mode":"set","value":1024},{"path":"parameters.height","mode":"set","value":1536}]}`
+		for _, tc := range []struct {
+			name, firstOverride, retryOverride, firstSubscription, retrySubscription, retryModel string
+			status, retryStatus, quota                                                           int
+			calls, retryCalls, credits                                                           int64
+		}{
+			{name: "paid to free refunds the earlier reservation", firstOverride: large, calls: 2, retryCalls: 1},
+			{name: "free to paid reserves before retry", retryOverride: large, calls: 2, retryCalls: 1, credits: 26},
+			{name: "retry uses its mapped model and subscription", firstSubscription: `{"active":true,"tier":3,"expiresAt":2147483647,"usage":{"isNegative":true}}`, retrySubscription: `{"active":true,"tier":3,"expiresAt":2147483647}`, retryModel: "nai-diffusion-4-5-full", calls: 2, retryCalls: 1},
+			{name: "all attempts fail and refund only once", firstOverride: large, retryOverride: large, retryStatus: 503, status: 503, calls: 2, retryCalls: 1},
+			{name: "unknown retry allowance cannot reuse earlier credits", firstOverride: large, retrySubscription: `{"active":true,"tier":3,"expiresAt":2147483647}`, status: 400, calls: 1},
+			{name: "insufficient retry quota never submits paid image", retryOverride: large, quota: 1, status: 403, calls: 1},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				subscription, retrySubscription := tc.firstSubscription, tc.retrySubscription
+				if subscription == "" {
+					subscription = activeOpus
+				}
+				if retrySubscription == "" {
+					retrySubscription = activeOpus
+				}
+				subscriptionBody.Store(subscription)
+				retrySubscriptionBody.Store(retrySubscription)
+				upstreamStatus.Store(http.StatusServiceUnavailable)
+				retryCode := tc.retryStatus
+				if retryCode == 0 {
+					retryCode = http.StatusCreated
+				}
+				retryStatus.Store(int64(retryCode))
+				quota := tc.quota
+				if quota == 0 {
+					quota = 1000000
+				}
+				api(t, "PUT", "/api/token/", admin, map[string]any{"id": tokenID, "name": "nai-gateway-test", "remain_quota": quota, "expired_time": -1, "group": "default"})
+				firstOverride, retryOverride := tc.firstOverride, tc.retryOverride
+				if firstOverride == "" {
+					firstOverride = "{}"
+				}
+				if retryOverride == "" {
+					retryOverride = "{}"
+				}
+				retryModel := tc.retryModel
+				if retryModel == "" {
+					retryModel = "nai-diffusion-5-full-medium"
+				}
+				retryMapping, err := common.Marshal(map[string]string{estimated: retryModel})
+				require.NoError(t, err)
+				api(t, "PUT", "/api/channel/", admin, map[string]any{"id": channelID, "type": constant.ChannelTypeNovelAI, "priority": 10, "param_override": firstOverride})
+				api(t, "PUT", "/api/channel/", admin, map[string]any{"id": retryID, "type": constant.ChannelTypeNovelAI, "param_override": retryOverride, "model_mapping": string(retryMapping)})
+				before := balances(t)
+				retryUsed := api(t, "GET", retryPath, admin, nil).Get("used_quota").Int()
+				logsBefore := api(t, "GET", "/api/log/?type=2&token_name=nai-gateway-test", admin, nil).Get("total").Int()
+				beforeCalls, beforeRetryCalls := calls.Load(), retryCalls.Load()
+				status, body := request(t, "POST", "/v1/images/generations", key, map[string]any{"model": estimated, "prompt": "a landscape", "size": "832x1216", "n": 1})
+				wantStatus := tc.status
+				if wantStatus == 0 {
+					wantStatus = http.StatusOK
+				}
+				require.Equal(t, wantStatus, status, "error code: %s", gjson.GetBytes(body, "error.code").String())
+				assert.Equal(t, tc.calls, calls.Load()-beforeCalls)
+				assert.Equal(t, tc.retryCalls, retryCalls.Load()-beforeRetryCalls, "retry must select the lower-priority channel")
+				charge, successes := int64(0), int64(0)
+				if status == http.StatusOK {
+					charge, successes = tc.credits*1250, 1
+				}
+				want := [6]int64{before[0] - charge, before[1] + charge, before[2] + successes, before[3] - charge, before[4] + charge, before[5]}
+				require.Eventually(t, func() bool { return balances(t) == want }, 5*time.Second, 100*time.Millisecond)
+				assert.Equal(t, retryUsed+charge, api(t, "GET", retryPath, admin, nil).Get("used_quota").Int())
+				logs := api(t, "GET", "/api/log/?type=2&token_name=nai-gateway-test", admin, nil)
+				require.Equal(t, logsBefore+successes, logs.Get("total").Int())
+				if status == http.StatusOK {
+					entry := logs.Get("items.0")
+					assert.Equal(t, retryID, entry.Get("channel").Int())
+					assert.Equal(t, charge, entry.Get("quota").Int())
+					assert.Equal(t, tc.credits, gjson.Get(entry.Get("other").String(), "image_credits").Int())
+				}
+			})
+		}
+	})
 	t.Run("unauthenticated request never reaches upstream", func(t *testing.T) {
 		before := calls.Load()
 		status, _ := request(t, "POST", "/v1/images/generations", "", map[string]any{"model": paid, "prompt": "test"})
 		assert.Equal(t, http.StatusUnauthorized, status)
 		assert.Equal(t, before, calls.Load())
+	})
+	t.Run("existing image client selects a model and saves PNG", func(t *testing.T) {
+		bun, script := os.Getenv("NAI_CLIENT_BUN"), os.Getenv("NAI_CLIENT_SCRIPT")
+		if bun == "" || script == "" {
+			t.Skip("set NAI_CLIENT_BUN and NAI_CLIENT_SCRIPT to test baoyu-image-gen with the mock upstream")
+		}
+		subscriptionBody.Store(activeOpus)
+		upstreamStatus.Store(http.StatusCreated)
+		returned.Store(1)
+		api(t, "PUT", "/api/channel/", admin, map[string]any{"id": channelID, "type": constant.ChannelTypeNovelAI, "param_override": "{}"})
+		api(t, "PUT", "/api/token/", admin, map[string]any{"id": tokenID, "name": "nai-gateway-test", "remain_quota": 1000000, "expired_time": -1, "group": "default"})
+		status, body := request(t, "GET", "/v1/models", key, nil)
+		require.Equal(t, http.StatusOK, status)
+		models := []string{}
+		for _, entry := range gjson.GetBytes(body, "data").Array() {
+			models = append(models, entry.Get("id").String())
+		}
+		require.Contains(t, models, estimated)
+		home := t.TempDir()
+		configDir := filepath.Join(home, ".baoyu-skills", "baoyu-image-gen")
+		require.NoError(t, os.MkdirAll(configDir, 0700))
+		require.NoError(t, os.WriteFile(filepath.Join(configDir, "EXTEND.md"), []byte("---\nversion: 1\ndefault_provider: openai\ndefault_quality: normal\ndefault_model:\n  openai: "+estimated+"\n---\n"), 0600))
+		output := filepath.Join(home, "client.png")
+		if path := os.Getenv("NAI_CLIENT_OUTPUT_PATH"); path != "" {
+			output = path
+		}
+		before := balances(t)
+		beforeCalls := calls.Load()
+		command := exec.CommandContext(t.Context(), bun, script,
+			"--provider", "openai", "--model", estimated, "--prompt", "a landscape",
+			"--size", "832x1216", "--quality", "normal", "--image", output, "--json")
+		command.Dir = home
+		command.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + home, "OPENAI_API_KEY=" + key, "OPENAI_BASE_URL=" + base + "/v1"}
+		clientOutput, err := command.CombinedOutput()
+		require.NoError(t, err, "image client: %s", clientOutput)
+		data, err := os.ReadFile(output)
+		require.NoError(t, err)
+		decoded, err := png.Decode(bytes.NewReader(data))
+		require.NoError(t, err)
+		assert.Equal(t, fixtureImage.Bounds(), decoded.Bounds())
+		assert.Equal(t, fixturePNG.Bytes(), data, "the client must preserve the complete image payload")
+		assert.Equal(t, beforeCalls+1, calls.Load(), "client compatibility must not require a second generation")
+		want := before
+		want[2]++
+		require.Eventually(t, func() bool { return balances(t) == want }, 5*time.Second, 100*time.Millisecond)
+		t.Logf("baoyu-image-gen selected %s and saved a valid %dx%d mock PNG", estimated, decoded.Bounds().Dx(), decoded.Bounds().Dy())
 	})
 	require.False(t, t.Failed(), "fixture checks must pass before contacting the live provider")
 	t.Run("live Opus image through full gateway", func(t *testing.T) {
