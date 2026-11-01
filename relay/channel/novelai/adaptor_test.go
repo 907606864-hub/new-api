@@ -451,6 +451,7 @@ func TestGatewayImageBilling(t *testing.T) {
 	admin := api(t, "POST", "/api/user/login", "", map[string]string{"username": "naitest", "password": password}).Get("access_token").String()
 	require.NotEmpty(t, admin)
 	api(t, "PUT", "/api/option/", admin, map[string]any{"key": "RetryTimes", "value": 0})
+	api(t, "PUT", "/api/option/", admin, map[string]any{"key": "AutomaticRetryStatusCodes", "value": "429,500-503"})
 	api(t, "POST", "/api/token/", admin, map[string]any{
 		"name": "nai-gateway-test", "remain_quota": 1000000, "expired_time": -1, "group": "default",
 	})
@@ -917,8 +918,8 @@ func TestGatewayImageBilling(t *testing.T) {
 		const large = `{"operations":[{"path":"parameters.width","mode":"set","value":1024},{"path":"parameters.height","mode":"set","value":1536}]}`
 		for _, tc := range []struct {
 			name, firstOverride, retryOverride, firstSubscription, retrySubscription, retryModel, response string
-			status, firstStatus, retryStatus, quota                                                       int
-			calls, retryCalls, credits                                                                   int64
+			status, firstStatus, retryStatus, quota                                                        int
+			calls, retryCalls, credits                                                                     int64
 		}{
 			{name: "paid to free refunds the earlier reservation", firstOverride: large, calls: 2, retryCalls: 1},
 			{name: "free to paid reserves before retry", retryOverride: large, calls: 2, retryCalls: 1, credits: 26},
