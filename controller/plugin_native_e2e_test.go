@@ -278,9 +278,9 @@ func TestDoubaoRelayedImageStreamSettlement(t *testing.T) {
 	previousLogConsume := common.LogConsumeEnabled
 	previousRedisEnabled := common.RedisEnabled
 	previousDeadline := constant.TaskPluginProtocolTimeoutSeconds
-	database, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
-	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(&model.User{}, &model.Channel{}, &model.Task{}, &model.Log{}))
+	previousMainDialect, previousLogDialect := common.MainDatabaseType(), common.LogDatabaseType()
+	database, dialect := openTaskDialectDatabase(t, &model.User{}, &model.Channel{}, &model.Task{}, &model.Log{})
+	common.SetDatabaseTypes(dialect, dialect)
 	model.DB = database
 	model.LOG_DB = database
 	common.MemoryCacheEnabled = false
@@ -306,6 +306,7 @@ func TestDoubaoRelayedImageStreamSettlement(t *testing.T) {
 		common.LogConsumeEnabled = previousLogConsume
 		common.RedisEnabled = previousRedisEnabled
 		constant.TaskPluginProtocolTimeoutSeconds = previousDeadline
+		common.SetDatabaseTypes(previousMainDialect, previousLogDialect)
 		require.NoError(t, ratio_setting.UpdateModelPriceByJSONString(previousPrices))
 	})
 	require.NoError(t, database.Create(&model.User{Id: 7, Username: "relayed-stream-user", Group: "default", Quota: 1_000_000}).Error)

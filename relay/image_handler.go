@@ -156,6 +156,15 @@ func ImageHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *type
 	statusCodeMappingStr := c.GetString("status_code_mapping")
 
 	resp, err := adaptor.DoRequest(c, info, requestBody)
+	if info.ApiType == constant.APITypeNovelAI && (err != nil || resp == nil || resp.(*http.Response).StatusCode == http.StatusOK) {
+		// NovelAI has no idempotency guarantee: a lost or unreadable success
+		// may already have consumed Anlas, so never submit it a second time.
+		defer func() {
+			if newAPIError != nil {
+				types.ErrOptionWithSkipRetry()(newAPIError)
+			}
+		}()
+	}
 	if err != nil {
 		return types.NewOpenAIError(err, types.ErrorCodeDoRequestFailed, http.StatusInternalServerError)
 	}
