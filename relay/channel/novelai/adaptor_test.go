@@ -2,13 +2,18 @@ package novelai_test
 
 import (
 	"bytes"
+	"crypto/rand"
 	"encoding/base64"
+	"fmt"
 	"image/png"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -223,4 +228,270 @@ func opusAnlasBalance(t *testing.T, token string) int {
 	require.True(t, subscription.Active)
 	require.Equal(t, 3, subscription.Tier, "only run the free small-image test with an active Opus subscription")
 	return subscription.Points.Fixed + subscription.Points.Purchased
+}
+
+// Opt-in only, against an uninitialized disposable gateway, never production.
+func TestGatewayImageBilling(t *testing.T) {
+	base := strings.TrimRight(os.Getenv("NAI_GATEWAY_URL"), "/")
+	if base == "" {
+		t.Skip("set NAI_GATEWAY_URL to a fresh, isolated nai-test gateway")
+	}
+	target, err := url.Parse(base)
+	require.NoError(t, err)
+	require.Equal(t, "http", target.Scheme)
+	require.Contains(t, []string{"127.0.0.1", "localhost", "::1"}, target.Hostname())
+	client := &http.Client{Timeout: 120 * time.Second}
+	request := func(t *testing.T, method, path, key string, payload any) (int, []byte) {
+		t.Helper()
+		body, err := common.Marshal(payload)
+		require.NoError(t, err)
+		req, err := http.NewRequest(method, base+path, bytes.NewReader(body))
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", "application/json")
+		if key != "" {
+			req.Header.Set("Authorization", "Bearer "+key)
+		}
+		resp, err := client.Do(req)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		data, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		return resp.StatusCode, data
+	}
+	api := func(t *testing.T, method, path, key string, payload any) gjson.Result {
+		t.Helper()
+		status, body := request(t, method, path, key, payload)
+		require.Equal(t, http.StatusOK, status, "%s %s", method, path)
+		require.True(t, gjson.GetBytes(body, "success").Bool(), "%s %s: %s", method, path, gjson.GetBytes(body, "message").String())
+		return gjson.GetBytes(body, "data")
+	}
+	require.Contains(t, api(t, "GET", "/api/status", "", nil).Get("version").String(), "nai-test")
+	setup := api(t, "GET", "/api/setup", "", nil)
+	require.False(t, setup.Get("status").Bool(), "only an uninitialized disposable gateway is allowed")
+	require.False(t, setup.Get("root_init").Bool())
+	password := "Nai-Test-9!" + rand.Text()
+	api(t, "POST", "/api/setup", "", map[string]any{
+		"username": "naitest", "password": password, "confirmPassword": password, "SelfUseModeEnabled": true,
+	})
+	admin := api(t, "POST", "/api/user/login", "", map[string]string{"username": "naitest", "password": password}).Get("access_token").String()
+	require.NotEmpty(t, admin)
+	api(t, "PUT", "/api/option/", admin, map[string]any{"key": "RetryTimes", "value": 0})
+	api(t, "POST", "/api/token/", admin, map[string]any{
+		"name": "nai-gateway-test", "remain_quota": 1000000, "expired_time": -1, "group": "default",
+	})
+	tokens := api(t, "GET", "/api/token/", admin, nil).Get("items").Array()
+	require.Len(t, tokens, 1)
+	tokenID := tokens[0].Get("id").Int()
+	tokenPath := fmt.Sprintf("/api/token/%d", tokenID)
+	key := api(t, "POST", tokenPath+"/key", admin, nil).Get("key").String()
+	require.NotEmpty(t, key)
+	t.Cleanup(func() { api(t, "DELETE", tokenPath, admin, nil) })
+
+	var calls, returned, upstreamStatus, receivedQuantity atomic.Int64
+	returned.Store(1)
+	upstreamStatus.Store(http.StatusCreated)
+	bind := os.Getenv("NAI_FIXTURE_BIND")
+	if bind == "" {
+		bind = "127.0.0.1:0"
+	}
+	listener, err := net.Listen("tcp", bind)
+	require.NoError(t, err)
+	ip := listener.Addr().(*net.TCPAddr).IP
+	require.True(t, ip.IsLoopback() || ip.IsPrivate(), "fixture must not listen on a public interface")
+	fixture := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		assert.Equal(t, "/ai/generate-image", r.URL.Path)
+		assert.Equal(t, "Bearer fixture-upstream-token", r.Header.Get("Authorization"))
+		assert.Equal(t, "application/json", r.Header.Get("Accept"))
+		body, err := io.ReadAll(r.Body)
+		if !assert.NoError(t, err) {
+			return
+		}
+		assert.Equal(t, "nai-diffusion-4-5-full", gjson.GetBytes(body, "model").String())
+		receivedQuantity.Store(gjson.GetBytes(body, "parameters.n_samples").Int())
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(int(upstreamStatus.Load()))
+		images := make([]map[string]string, returned.Load())
+		for i := range images {
+			images[i] = map[string]string{"image": "aW1hZ2U="}
+		}
+		response, err := common.Marshal(map[string]any{"images": images})
+		if !assert.NoError(t, err) {
+			return
+		}
+		_, _ = w.Write(response)
+	}))
+	require.NoError(t, fixture.Listener.Close())
+	fixture.Listener = listener
+	fixture.Start()
+	t.Cleanup(fixture.Close)
+
+	const paid, free, legacy = "nai-diffusion-gateway-paid", "nai-diffusion-gateway-free", "nai-diffusion-gateway-legacy"
+	mapping, err := common.Marshal(map[string]string{paid: "nai-diffusion-4-5-full", free: "nai-diffusion-4-5-full", legacy: "nai-diffusion-4-5-full"})
+	require.NoError(t, err)
+	api(t, "POST", "/api/channel/", admin, map[string]any{
+		"mode": "single", "channel": map[string]any{
+			"type": constant.ChannelTypeNovelAI, "name": "nai-gateway-test", "key": "fixture-upstream-token",
+			"base_url": fixture.URL, "models": strings.Join([]string{paid, free, legacy}, ","), "group": "default",
+			"model_mapping": string(mapping), "auto_ban": 0,
+		},
+	})
+	channels := api(t, "GET", "/api/channel/", admin, nil).Get("items").Array()
+	require.Len(t, channels, 1)
+	channelID := channels[0].Get("id").Int()
+	channelPath := fmt.Sprintf("/api/channel/%d", channelID)
+	t.Cleanup(func() { api(t, "DELETE", channelPath, admin, nil) })
+	snapshot := api(t, "GET", "/api/option/model_pricing", admin, nil)
+	changes := []map[string]any{}
+	for _, name := range []string{paid, free, legacy} {
+		version := snapshot.Get("empty_version").String()
+		for _, entry := range snapshot.Get("entries").Array() {
+			if entry.Get("model_name").String() == name {
+				version = entry.Get("version").String()
+			}
+		}
+		pricing := map[string]any{
+			"billing_setting.billing_mode": "tiered_expr",
+			"billing_setting.billing_expr": `tier("image", fixed(0.01)) * image_count`,
+		}
+		if name == free {
+			pricing["billing_setting.billing_expr"] = `tier("image", fixed(0)) * image_count`
+		} else if name == legacy {
+			pricing = map[string]any{"ModelPrice": 0.01}
+		}
+		changes = append(changes, map[string]any{"model_name": name, "expected_version": version, "pricing": pricing})
+	}
+	api(t, "PATCH", "/api/option/model_pricing", admin, map[string]any{"changes": changes})
+	balances := func(t *testing.T) [6]int64 {
+		t.Helper()
+		user := api(t, "GET", "/api/user/self", admin, nil)
+		token := api(t, "GET", tokenPath, admin, nil)
+		channel := api(t, "GET", channelPath, admin, nil)
+		return [6]int64{user.Get("quota").Int(), user.Get("used_quota").Int(), user.Get("request_count").Int(),
+			token.Get("remain_quota").Int(), token.Get("used_quota").Int(), channel.Get("used_quota").Int()}
+	}
+	for _, tc := range []struct {
+		name, model                  string
+		native, override, images     int64
+		status, wantStatus           int
+		wantCalls, wantCount, charge int64
+		stream, poor                 bool
+	}{
+		{name: "mapped model and expression price", model: paid, native: 1, images: 1, wantCount: 1, wantCalls: 1, charge: 5000},
+		{name: "native count settles two payloads", model: paid, native: 2, images: 2, wantCount: 2, wantCalls: 1, charge: 10000},
+		{name: "override reserves two refunds missing image", model: paid, native: 1, override: 2, images: 1, wantCount: 2, wantCalls: 1, charge: 5000},
+		{name: "JSON as SSE settles actual image", model: paid, native: 2, images: 1, wantCount: 2, wantCalls: 1, charge: 5000, stream: true},
+		{name: "explicit zero price remains free", model: free, native: 1, images: 1, wantCount: 1, wantCalls: 1},
+		{name: "legacy per image price", model: legacy, native: 2, images: 1, wantCount: 2, wantCalls: 1, charge: 5000},
+		{name: "invalid native count never submitted", model: paid, native: 129, images: 1, wantStatus: 400},
+		{name: "invalid override never submitted", model: paid, native: 1, override: 129, images: 1, wantStatus: 400},
+		{name: "upstream failure refunds reservation", model: paid, native: 2, images: 0, status: 400, wantStatus: 400, wantCount: 2, wantCalls: 1},
+		{name: "missing image refunds reservation", model: paid, native: 2, images: 0, wantStatus: 502, wantCount: 2, wantCalls: 1},
+		{name: "insufficient token quota blocks upstream", model: paid, native: 2, images: 1, wantStatus: 403, poor: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			override := "{}"
+			if tc.override != 0 {
+				data, err := common.Marshal(map[string]any{"operations": []any{map[string]any{"path": "parameters.n_samples", "mode": "set", "value": tc.override}}})
+				require.NoError(t, err)
+				override = string(data)
+			}
+			api(t, "PUT", "/api/channel/", admin, map[string]any{"id": channelID, "type": constant.ChannelTypeNovelAI, "param_override": override})
+			if tc.poor {
+				api(t, "PUT", "/api/token/", admin, map[string]any{"id": tokenID, "name": "nai-gateway-test", "remain_quota": 1, "expired_time": -1, "group": "default"})
+			}
+			before := balances(t)
+			callCount := calls.Load()
+			returned.Store(tc.images)
+			status := tc.status
+			if status == 0 {
+				status = http.StatusCreated
+			}
+			upstreamStatus.Store(int64(status))
+			code, body := request(t, "POST", "/v1/images/generations", key, map[string]any{
+				"model": tc.model, "prompt": "a landscape", "n": 1, "size": "832x1216",
+				"parameters": map[string]any{"n_samples": tc.native}, "stream": tc.stream,
+			})
+			wantStatus := tc.wantStatus
+			if wantStatus == 0 {
+				wantStatus = http.StatusOK
+			}
+			require.Equal(t, wantStatus, code, "error code: %s", gjson.GetBytes(body, "error.code").String())
+			assert.Equal(t, tc.wantCalls, calls.Load()-callCount)
+			if tc.wantCalls != 0 {
+				assert.Equal(t, tc.wantCount, receivedQuantity.Load())
+			}
+			if code == http.StatusOK {
+				if tc.stream {
+					assert.Equal(t, int(tc.images), bytes.Count(body, []byte("event: image_generation.completed")))
+					assert.Contains(t, string(body), "data: [DONE]")
+				} else {
+					assert.Len(t, gjson.GetBytes(body, "data").Array(), int(tc.images))
+				}
+			}
+			want := before
+			want[0] -= tc.charge
+			want[1] += tc.charge
+			want[3] -= tc.charge
+			want[4] += tc.charge
+			want[5] += tc.charge
+			if code == http.StatusOK {
+				want[2]++
+			}
+			require.Eventually(t, func() bool { return balances(t) == want }, 5*time.Second, 100*time.Millisecond,
+				"wallet, user usage, request count, token and channel accounting must reconcile")
+			if code == http.StatusOK {
+				logs := api(t, "GET", "/api/log/?type=2&token_name=nai-gateway-test", admin, nil).Get("items").Array()
+				require.NotEmpty(t, logs)
+				assert.Equal(t, tc.charge, logs[0].Get("quota").Int())
+				assert.Equal(t, channelID, logs[0].Get("channel").Int())
+				if tc.model != legacy {
+					assert.Equal(t, tc.images, gjson.Get(logs[0].Get("other").String(), "image_count").Int())
+				}
+			}
+		})
+	}
+	t.Run("unauthenticated request never reaches upstream", func(t *testing.T) {
+		before := calls.Load()
+		status, _ := request(t, "POST", "/v1/images/generations", "", map[string]any{"model": paid, "prompt": "test"})
+		assert.Equal(t, http.StatusUnauthorized, status)
+		assert.Equal(t, before, calls.Load())
+	})
+	require.False(t, t.Failed(), "fixture checks must pass before contacting the live provider")
+	t.Run("live Opus small image through full gateway", func(t *testing.T) {
+		if os.Getenv("NAI_LIVE_TEST") != "1" {
+			t.Skip("set NAI_LIVE_TEST=1 and NAI_TOKEN for one real free Opus image")
+		}
+		token := os.Getenv("NAI_TOKEN")
+		require.NotEmpty(t, token)
+		anlas := opusAnlasBalance(t, token)
+		api(t, "PUT", "/api/token/", admin, map[string]any{"id": tokenID, "name": "nai-gateway-test", "remain_quota": 1000000, "expired_time": -1, "group": "default"})
+		api(t, "PUT", "/api/channel/", admin, map[string]any{
+			"id": channelID, "type": constant.ChannelTypeNovelAI, "base_url": "https://image.novelai.net",
+			"key": token, "param_override": "{}",
+		})
+		before := balances(t)
+		code, body := request(t, "POST", "/v1/images/generations", key, map[string]any{
+			"model": paid, "prompt": "a quiet mountain lake, pine forest, blue sky, watercolor landscape, no people",
+			"n": 1, "size": "832x1216", "response_format": "b64_json", "parameters": map[string]any{"steps": 23},
+		})
+		require.Equal(t, http.StatusOK, code, "error code: %s", gjson.GetBytes(body, "error.code").String())
+		image, err := base64.StdEncoding.DecodeString(gjson.GetBytes(body, "data.0.b64_json").String())
+		require.NoError(t, err)
+		config, err := png.DecodeConfig(bytes.NewReader(image))
+		require.NoError(t, err)
+		require.Equal(t, 832, config.Width)
+		require.Equal(t, 1216, config.Height)
+		assert.Equal(t, anlas, opusAnlasBalance(t, token), "free small-image test must not consume Anlas")
+		want := [6]int64{before[0] - 5000, before[1] + 5000, before[2] + 1, before[3] - 5000, before[4] + 5000, before[5] + 5000}
+		assert.Equal(t, want, balances(t), "test-only $0.01 image price must settle independently of upstream Anlas")
+		logs := api(t, "GET", "/api/log/?type=2&token_name=nai-gateway-test", admin, nil).Get("items").Array()
+		require.NotEmpty(t, logs)
+		assert.Equal(t, int64(5000), logs[0].Get("quota").Int())
+		assert.Equal(t, int64(1), gjson.Get(logs[0].Get("other").String(), "image_count").Int())
+		if path := os.Getenv("NAI_OUTPUT_PATH"); path != "" {
+			require.NoError(t, os.WriteFile(path, image, 0600))
+		}
+		t.Logf("full authenticated image relay and test billing passed; Anlas before=%d after=%d", anlas, anlas)
+	})
 }
