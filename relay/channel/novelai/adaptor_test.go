@@ -463,10 +463,11 @@ func TestGatewayImageBilling(t *testing.T) {
 	t.Cleanup(func() { api(t, "DELETE", tokenPath, admin, nil) })
 
 	var calls, retryCalls, returned, upstreamStatus, retryStatus, receivedQuantity atomic.Int64
-	var subscriptionBody, retrySubscriptionBody atomic.Value
+	var subscriptionBody, retrySubscriptionBody, responseMode atomic.Value
 	const activeOpus = `{"active":true,"tier":3,"expiresAt":2147483647,"usage":{"isNegative":false}}`
 	subscriptionBody.Store(activeOpus)
 	retrySubscriptionBody.Store(activeOpus)
+	responseMode.Store("")
 	type generationGate struct {
 		entered chan struct{}
 		release chan struct{}
@@ -527,6 +528,31 @@ func TestGatewayImageBilling(t *testing.T) {
 		}
 		if gjson.GetBytes(body, "input").String() == "fixture-reject" {
 			status = http.StatusBadRequest
+		}
+		if !retry {
+			switch responseMode.Load().(string) {
+			case "disconnect":
+				connection, _, err := w.(http.Hijacker).Hijack()
+				if assert.NoError(t, err) {
+					_ = connection.Close()
+				}
+				return
+			case "malformed", "truncated":
+				if responseMode.Load().(string) == "truncated" {
+					w.Header().Set("Content-Length", "1000")
+				}
+				w.WriteHeader(int(status))
+				_, _ = io.WriteString(w, `{"images":[`)
+				return
+			case "missing":
+				w.WriteHeader(int(status))
+				_, _ = io.WriteString(w, `{"images":[]}`)
+				return
+			case "empty":
+				w.WriteHeader(int(status))
+				_, _ = io.WriteString(w, `{"images":[{"image":""}]}`)
+				return
+			}
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(int(status))
@@ -887,11 +913,12 @@ func TestGatewayImageBilling(t *testing.T) {
 		defer api(t, "DELETE", retryPath, admin, nil)
 		api(t, "PUT", "/api/option/", admin, map[string]any{"key": "RetryTimes", "value": 1})
 		defer api(t, "PUT", "/api/option/", admin, map[string]any{"key": "RetryTimes", "value": 0})
+		defer responseMode.Store("")
 		const large = `{"operations":[{"path":"parameters.width","mode":"set","value":1024},{"path":"parameters.height","mode":"set","value":1536}]}`
 		for _, tc := range []struct {
-			name, firstOverride, retryOverride, firstSubscription, retrySubscription, retryModel string
-			status, retryStatus, quota                                                           int
-			calls, retryCalls, credits                                                           int64
+			name, firstOverride, retryOverride, firstSubscription, retrySubscription, retryModel, response string
+			status, firstStatus, retryStatus, quota                                                       int
+			calls, retryCalls, credits                                                                   int64
 		}{
 			{name: "paid to free refunds the earlier reservation", firstOverride: large, calls: 2, retryCalls: 1},
 			{name: "free to paid reserves before retry", retryOverride: large, calls: 2, retryCalls: 1, credits: 26},
@@ -899,6 +926,11 @@ func TestGatewayImageBilling(t *testing.T) {
 			{name: "all attempts fail and refund only once", firstOverride: large, retryOverride: large, retryStatus: 503, status: 503, calls: 2, retryCalls: 1},
 			{name: "unknown retry allowance cannot reuse earlier credits", firstOverride: large, retrySubscription: `{"active":true,"tier":3,"expiresAt":2147483647}`, status: 400, calls: 1},
 			{name: "insufficient retry quota never submits paid image", retryOverride: large, quota: 1, status: 403, calls: 1},
+			{name: "disconnect never resubmits an uncertain generation", firstOverride: large, response: "disconnect", status: 500, calls: 1},
+			{name: "malformed success never resubmits", firstOverride: large, firstStatus: 201, response: "malformed", status: 502, calls: 1},
+			{name: "truncated success never resubmits", firstOverride: large, firstStatus: 201, response: "truncated", status: 502, calls: 1},
+			{name: "missing images never resubmits", firstOverride: large, firstStatus: 201, response: "missing", status: 502, calls: 1},
+			{name: "empty image never resubmits", firstOverride: large, firstStatus: 201, response: "empty", status: 502, calls: 1},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				subscription, retrySubscription := tc.firstSubscription, tc.retrySubscription
@@ -910,7 +942,12 @@ func TestGatewayImageBilling(t *testing.T) {
 				}
 				subscriptionBody.Store(subscription)
 				retrySubscriptionBody.Store(retrySubscription)
-				upstreamStatus.Store(http.StatusServiceUnavailable)
+				firstCode := tc.firstStatus
+				if firstCode == 0 {
+					firstCode = http.StatusServiceUnavailable
+				}
+				upstreamStatus.Store(int64(firstCode))
+				responseMode.Store(tc.response)
 				retryCode := tc.retryStatus
 				if retryCode == 0 {
 					retryCode = http.StatusCreated
