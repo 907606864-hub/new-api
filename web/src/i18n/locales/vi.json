@@ -5059,7 +5059,6 @@
     "Recommended actions": "Hành động đề xuất",
     "Recommended to keep this high to avoid upstream throttling.": "Khuyến nghị giữ mức này cao để tránh điều tiết từ phía thượng nguồn.",
     "Record IP Address": "Ghi lại địa chỉ IP",
-
     "Mandatory security policy: IP logging is permanently enabled by administrator.": "Chính sách bảo mật bắt buộc: Ghi nhật ký IP được bật vĩnh viễn bởi quản trị viên.",
     "Record quota usage": "Ghi lại mức sử dụng hạn mức",
     "Recover auto-disabled channels only": "Chỉ khôi phục kênh bị tự động vô hiệu hóa",
@@ -7385,6 +7384,7 @@
     "Invalid NovelAI subscription response": "Phản hồi đăng ký NovelAI không hợp lệ",
     "Estimated Anlas": "Anlas ước tính",
     "Anlas unit price": "Đơn giá Anlas",
-    "Anlas": "Anlas"
+    "Anlas": "Anlas",
+    "Inactive": "Không hoạt động"
   }
 }

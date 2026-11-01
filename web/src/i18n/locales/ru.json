@@ -5059,7 +5059,6 @@
     "Recommended actions": "Рекомендуемые действия",
     "Recommended to keep this high to avoid upstream throttling.": "Рекомендуется поддерживать это значение высоким, чтобы избежать регулирования со стороны вышестоящего поставщика.",
     "Record IP Address": "Записывать IP-адрес",
-
     "Mandatory security policy: IP logging is permanently enabled by administrator.": "Обязательная политика безопасности: запись IP-адресов включена администратором на постоянной основе.",
     "Record quota usage": "Записывать использование квоты",
     "Recover auto-disabled channels only": "Только восстанавливать автоотключённые каналы",
@@ -7385,6 +7384,7 @@
     "Invalid NovelAI subscription response": "Некорректный ответ о подписке NovelAI",
     "Estimated Anlas": "Оценка Anlas",
     "Anlas unit price": "Цена единицы Anlas",
-    "Anlas": "Anlas"
+    "Anlas": "Anlas",
+    "Inactive": "Неактивна"
   }
 }

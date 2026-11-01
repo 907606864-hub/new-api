@@ -50,11 +50,7 @@ export function NovelAIBalance(props: {
   const { sensitiveVisible } = useChannels()
   const multiKey = isMultiKeyChannel(props.channel)
   const query = useQuery({
-    queryKey: [
-      ...channelsQueryKeys.lists(),
-      'novelai-balance',
-      props.channel.id,
-    ],
+    queryKey: [...channelsQueryKeys.all, 'novelai-balance', props.channel.id],
     queryFn: async ({ signal }) => {
       const response = requireServerSuccess(
         await updateChannelBalance(props.channel.id, signal)

@@ -5059,7 +5059,6 @@
     "Recommended actions": "Recommended actions",
     "Recommended to keep this high to avoid upstream throttling.": "Recommended to keep this high to avoid upstream throttling.",
     "Record IP Address": "Record IP Address",
-
     "Mandatory security policy: IP logging is permanently enabled by administrator.": "Mandatory security policy: IP logging is permanently enabled by administrator.",
     "Record quota usage": "Record quota usage",
     "Recover auto-disabled channels only": "Recover auto-disabled channels only",
@@ -7385,6 +7384,7 @@
     "Invalid NovelAI subscription response": "Invalid NovelAI subscription response",
     "Estimated Anlas": "Estimated Anlas",
     "Anlas unit price": "Anlas unit price",
-    "Anlas": "Anlas"
+    "Anlas": "Anlas",
+    "Inactive": "Inactive"
   }
 }

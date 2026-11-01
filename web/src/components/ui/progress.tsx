@@ -92,61 +92,7 @@ function ProgressValue({ className, ...props }: ProgressPrimitive.Value.Props) {
   )
 }
 
-function CircularProgress({
-  className,
-  children,
-  value,
-  ...props
-}: Pick<
-  ProgressPrimitive.Root.Props,
-  'className' | 'children' | 'value' | 'aria-label' | 'aria-valuetext'
->) {
-  const percent = Math.min(100, Math.max(0, value ?? 0))
-  return (
-    <ProgressPrimitive.Root
-      value={value == null ? null : percent}
-      className={cn(
-        'relative grid size-10 shrink-0 place-items-center',
-        className
-      )}
-      {...props}
-    >
-      <svg
-        viewBox='0 0 40 40'
-        className='absolute inset-0 size-full -rotate-90'
-        aria-hidden='true'
-      >
-        <circle
-          cx='20'
-          cy='20'
-          r='17'
-          fill='none'
-          stroke='currentColor'
-          strokeWidth='3'
-          className='text-muted'
-        />
-        <circle
-          cx='20'
-          cy='20'
-          r='17'
-          fill='none'
-          stroke='currentColor'
-          strokeWidth='3'
-          strokeLinecap='round'
-          pathLength='100'
-          strokeDasharray='100'
-          strokeDashoffset={100 - percent}
-        />
-      </svg>
-      <span className='relative text-[10px] font-semibold tabular-nums'>
-        {children}
-      </span>
-    </ProgressPrimitive.Root>
-  )
-}
-
 export {
-  CircularProgress,
   Progress,
   ProgressTrack,
   ProgressIndicator,

@@ -132,7 +132,7 @@ func TestNativeImageResponse(t *testing.T) {
 			info := &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{}}
 			info.PriceData.UsePrice = true
 			body, err := common.Marshal(map[string]any{"images": []any{
-				map[string]string{"image": base64.StdEncoding.EncodeToString(pngBytes.Bytes())},
+				map[string]any{"image": base64.StdEncoding.EncodeToString(pngBytes.Bytes()), "index": 0, "seed": 42},
 			}})
 			require.NoError(t, err)
 			_, apiErr := (&novelai.Adaptor{}).DoResponse(c, &http.Response{

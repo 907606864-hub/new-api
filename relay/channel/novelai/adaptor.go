@@ -25,8 +25,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// The experimental adaptor uses the official JSON API instead of the fork's
-// ZIP extraction and subscription-wallet accounting.
+// Adaptor relays NovelAI image generation via the official JSON endpoint.
 type Adaptor struct{}
 
 type ImageRequest struct {
@@ -153,8 +152,8 @@ func (*Adaptor) ConvertImageRequest(c *gin.Context, info *relaycommon.RelayInfo,
 	if err := common.Unmarshal(defaults, &parameters); err != nil {
 		return nil, err
 	}
-	// extra_fields preserves the fork's flat parameter convention; native
-	// parameters take precedence and retain explicit zero/false values.
+	// extra_fields supports flat parameter overrides; native parameters
+	// take precedence and retain explicit zero/false values.
 	for _, raw := range []json.RawMessage{request.ExtraFields, request.Extra["parameters"]} {
 		if len(raw) == 0 {
 			continue
@@ -259,9 +258,7 @@ func (*Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycommo
 	}
 	defer service.CloseResponseBodyGracefully(resp)
 	var upstream struct {
-		Images []struct {
-			Image string `json:"image"`
-		} `json:"images"`
+		Images []map[string]json.RawMessage `json:"images"`
 	}
 	if err := common.DecodeJson(resp.Body, &upstream); err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusBadGateway)
@@ -273,11 +270,14 @@ func (*Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycommo
 		return nil, types.NewOpenAIError(errors.New("NovelAI estimated credit pricing requires exactly one returned image"), types.ErrorCodeBadResponseBody, http.StatusBadGateway)
 	}
 	response := dto.ImageResponse{Created: time.Now().Unix()}
-	for _, image := range upstream.Images {
-		if strings.TrimSpace(image.Image) == "" {
+	images := make([]string, 0, len(upstream.Images))
+	for _, entry := range upstream.Images {
+		var image string
+		if err := common.Unmarshal(entry["image"], &image); err != nil || strings.TrimSpace(image) == "" {
 			return nil, types.NewOpenAIError(errors.New("NovelAI returned an empty image"), types.ErrorCodeBadResponseBody, http.StatusBadGateway)
 		}
-		response.Data = append(response.Data, dto.ImageData{B64Json: image.Image})
+		images = append(images, image)
+		response.Data = append(response.Data, dto.ImageData{B64Json: image})
 	}
 	if c.Request.URL.Path == "/ai/generate-image" {
 		var body []byte
@@ -291,8 +291,8 @@ func (*Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycommo
 		} else {
 			var buffer bytes.Buffer
 			archive := zip.NewWriter(&buffer)
-			for i, image := range upstream.Images {
-				data, err := base64.StdEncoding.DecodeString(image.Image)
+			for i, image := range images {
+				data, err := base64.StdEncoding.DecodeString(image)
 				if err != nil || len(data) == 0 {
 					return nil, types.NewOpenAIError(errors.New("NovelAI returned invalid base64 image data"), types.ErrorCodeBadResponseBody, http.StatusBadGateway)
 				}
