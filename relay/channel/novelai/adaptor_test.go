@@ -568,14 +568,23 @@ func TestGatewayImageBilling(t *testing.T) {
 		assert.Equal(t, before, calls.Load())
 	})
 	require.False(t, t.Failed(), "fixture checks must pass before contacting the live provider")
-	t.Run("live Opus small image through full gateway", func(t *testing.T) {
+	t.Run("live Opus image through full gateway", func(t *testing.T) {
 		if os.Getenv("NAI_LIVE_TEST") != "1" {
-			t.Skip("set NAI_LIVE_TEST=1 and NAI_TOKEN for one real free Opus image")
+			t.Skip("set NAI_LIVE_TEST=1 and NAI_TOKEN for one real Opus image")
 		}
 		token := os.Getenv("NAI_TOKEN")
 		require.NotEmpty(t, token)
 		liveModel, subscription := liveOpusImageModel(t, token)
 		anlas := *subscription.Points.Fixed + *subscription.Points.Purchased
+		width, height, expectedAnlas := 832, 1216, int64(0)
+		if os.Getenv("NAI_LIVE_PAID_TEST") == "1" {
+			require.Equal(t, "1", os.Getenv("NAI_ALLOW_ANLAS_TEST"))
+			require.Equal(t, "nai-diffusion-5-full-medium", liveModel)
+			// Official web pricing, checked 2026-11-01: one 14-step image,
+			// without SMEA, references or other paid extras.
+			width, height, expectedAnlas = 1024, 1536, 26
+			require.GreaterOrEqual(t, anlas, expectedAnlas)
+		}
 		liveMapping, err := common.Marshal(map[string]string{paid: liveModel, free: liveModel, legacy: liveModel})
 		require.NoError(t, err)
 		api(t, "PUT", "/api/token/", admin, map[string]any{"id": tokenID, "name": "nai-gateway-test", "remain_quota": 1000000, "expired_time": -1, "group": "default"})
@@ -587,22 +596,52 @@ func TestGatewayImageBilling(t *testing.T) {
 		if liveModel == "nai-diffusion-5-full-medium" {
 			liveSteps = 14
 		}
+		resources := func(t *testing.T) opusTestSubscription {
+			t.Helper()
+			status, body := request(t, "GET", fmt.Sprintf("/api/channel/update_balance/%d", channelID), admin, nil)
+			require.Equal(t, http.StatusOK, status)
+			require.True(t, gjson.GetBytes(body, "success").Bool())
+			require.False(t, gjson.GetBytes(body, "balance").Exists(), "Anlas must not be exposed as USD")
+			require.Greater(t, gjson.GetBytes(body, "novelai.sampled_at").Int(), int64(0))
+			var snapshot opusTestSubscription
+			require.NoError(t, common.UnmarshalJsonStr(gjson.GetBytes(body, "novelai").Raw, &snapshot))
+			require.NotNil(t, snapshot.Points.Fixed)
+			require.NotNil(t, snapshot.Points.Purchased)
+			if strings.HasPrefix(liveModel, "nai-diffusion-5-") {
+				require.NotNil(t, snapshot.Usage)
+				require.NotNil(t, snapshot.Usage.Percent)
+				require.NotNil(t, snapshot.Usage.Negative)
+			}
+			return snapshot
+		}
+		resourcesBefore := resources(t)
+		require.Equal(t, anlas, *resourcesBefore.Points.Fixed+*resourcesBefore.Points.Purchased)
+		channelBefore := api(t, "GET", channelPath, admin, nil)
 		before := balances(t)
 		code, body := request(t, "POST", "/v1/images/generations", key, map[string]any{
 			"model": paid, "prompt": "a quiet mountain lake, pine forest, blue sky, watercolor landscape, no people",
-			"n": 1, "size": "832x1216", "response_format": "b64_json", "parameters": map[string]any{"steps": liveSteps},
+			"n": 1, "size": fmt.Sprintf("%dx%d", width, height), "response_format": "b64_json",
+			"parameters": map[string]any{"steps": liveSteps},
 		})
 		require.Equal(t, http.StatusOK, code, "error code: %s", gjson.GetBytes(body, "error.code").String())
 		image, err := base64.StdEncoding.DecodeString(gjson.GetBytes(body, "data.0.b64_json").String())
 		require.NoError(t, err)
 		config, err := png.DecodeConfig(bytes.NewReader(image))
 		require.NoError(t, err)
-		require.Equal(t, 832, config.Width)
-		require.Equal(t, 1216, config.Height)
-		anlasAfter := opusAnlasBalance(t, token)
-		assert.Equal(t, anlas, anlasAfter, "free small-image test must not consume Anlas")
+		require.Equal(t, width, config.Width)
+		require.Equal(t, height, config.Height)
+		resourcesAfter := resources(t)
+		anlasAfter := *resourcesAfter.Points.Fixed + *resourcesAfter.Points.Purchased
+		// Balance deltas are evidence for this isolated manual test only,
+		// not a concurrency-safe source of per-request billing usage.
+		assert.Equal(t, expectedAnlas, anlas-anlasAfter, "upstream deduction must match the checked price")
 		want := [6]int64{before[0] - 5000, before[1] + 5000, before[2] + 1, before[3] - 5000, before[4] + 5000, before[5] + 5000}
-		assert.Equal(t, want, balances(t), "test-only $0.01 image price must settle independently of upstream Anlas")
+		require.Eventually(t, func() bool { return balances(t) == want }, 5*time.Second, 100*time.Millisecond,
+			"test-only $0.01 image price must settle independently of upstream Anlas")
+		channelAfter := api(t, "GET", channelPath, admin, nil)
+		assert.Equal(t, channelBefore.Get("balance").Raw, channelAfter.Get("balance").Raw)
+		assert.Equal(t, channelBefore.Get("balance_updated_time").Raw, channelAfter.Get("balance_updated_time").Raw,
+			"resource queries must not persist a USD balance")
 		logs := api(t, "GET", "/api/log/?type=2&token_name=nai-gateway-test", admin, nil).Get("items").Array()
 		require.NotEmpty(t, logs)
 		assert.Equal(t, int64(5000), logs[0].Get("quota").Int())
@@ -610,6 +649,12 @@ func TestGatewayImageBilling(t *testing.T) {
 		if path := os.Getenv("NAI_OUTPUT_PATH"); path != "" {
 			require.NoError(t, os.WriteFile(path, image, 0600))
 		}
-		t.Logf("full authenticated image relay completed; model=%s; Anlas before=%d after=%d", liveModel, anlas, anlasAfter)
+		t.Logf("full authenticated image relay completed; model=%s; size=%dx%d; steps=%d; Anlas before=%d after=%d; isolated deduction=%d; allocated cost at $25/10000=$%.4f",
+			liveModel, width, height, liveSteps, anlas, anlasAfter, anlas-anlasAfter, float64(anlas-anlasAfter)*0.0025)
+		if resourcesBefore.Usage != nil && resourcesAfter.Usage != nil &&
+			resourcesBefore.Usage.Percent != nil && resourcesAfter.Usage.Percent != nil {
+			t.Logf("channel resource API V5 allowance before=%d%% after=%d%%",
+				*resourcesBefore.Usage.Percent, *resourcesAfter.Usage.Percent)
+		}
 	})
 }
