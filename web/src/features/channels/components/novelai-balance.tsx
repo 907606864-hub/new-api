@@ -16,14 +16,13 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { DiamondIcon, RefreshIcon } from '@hugeicons/core-free-icons'
+import { RefreshIcon } from '@hugeicons/core-free-icons'
 import { HugeiconsIcon } from '@hugeicons/react'
 import { useQuery } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 
 import { LoadingState } from '@/components/loading-state'
 import { Button } from '@/components/ui/button'
-import { CircularProgress } from '@/components/ui/progress'
 import {
   Tooltip,
   TooltipContent,
@@ -31,11 +30,7 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip'
 import { toIntlLocale } from '@/i18n/languages'
-import {
-  formatCompactNumber,
-  formatNumber,
-  formatTimestampToDate,
-} from '@/lib/format'
+import { formatNumber, formatTimestampToDate } from '@/lib/format'
 import {
   createServerError,
   requireServerSuccess,
@@ -95,25 +90,12 @@ export function NovelAIBalance(props: {
   let total: number | null = null
   if (fixed != null && purchased != null) total = fixed + purchased
   const percent = usage?.percent
-  let ringText = '?'
-  if (percent != null) {
-    const formatted = formatNumber(percent, locale)
-    ringText = `${formatted.length > 4 ? formatCompactNumber(percent, locale) : formatted}%`
-  }
   const number = (value: number | null | undefined) =>
     value == null ? t('Unknown') : formatNumber(value, locale)
-  let allowanceLabel = number(percent)
-  if (percent != null) allowanceLabel += '%'
+  const allowanceText = percent == null ? t('Unknown') : `${number(percent)}%`
+  let allowanceLabel = allowanceText
   if (usage?.isNegative === true) allowanceLabel += ` (${t('Exhausted')})`
   const nextPercent = usage?.timeUntilNextPercent
-  let ringColor = 'text-success'
-  if (percent == null) {
-    ringColor = 'text-muted-foreground'
-  } else if (usage?.isNegative === true || percent <= 5) {
-    ringColor = 'text-destructive'
-  } else if (percent <= 20) {
-    ringColor = 'text-warning'
-  }
   let nextPercentLabel = t('Unknown')
   if (nextPercent === 0) nextPercentLabel = t('Refill paused')
   else if (nextPercent != null && data) {
@@ -166,7 +148,7 @@ export function NovelAIBalance(props: {
         aria-busy={query.isFetching}
       >
         <div
-          className='flex min-h-10 min-w-0 flex-row items-center gap-2'
+          className='flex min-h-5 min-w-0 flex-row items-center gap-3'
           role='group'
           aria-label='NovelAI'
         >
@@ -178,19 +160,13 @@ export function NovelAIBalance(props: {
                 <TooltipTrigger
                   render={
                     <span
-                      className='inline-flex min-w-0 items-center gap-1 text-xs tabular-nums'
+                      className='text-xs whitespace-nowrap tabular-nums'
                       tabIndex={0}
                       aria-label={`${number(total)} Anlas`}
                     />
                   }
                 >
-                  <HugeiconsIcon
-                    icon={DiamondIcon}
-                    size={16}
-                    className='text-info shrink-0'
-                    aria-hidden='true'
-                  />
-                  <span className='break-all'>{number(total)}</span>
+                  {number(total)}
                 </TooltipTrigger>
                 <TooltipContent>
                   <div className='flex flex-col gap-2'>
@@ -201,16 +177,16 @@ export function NovelAIBalance(props: {
               </Tooltip>
               <Tooltip>
                 <TooltipTrigger
-                  render={<span className='shrink-0' tabIndex={0} />}
+                  render={
+                    <span
+                      className='text-muted-foreground shrink-0 text-xs whitespace-nowrap tabular-nums'
+                      tabIndex={0}
+                      aria-label={t('V5 allowance')}
+                      aria-description={allowanceLabel}
+                    />
+                  }
                 >
-                  <CircularProgress
-                    aria-label={t('V5 allowance')}
-                    value={percent ?? null}
-                    aria-valuetext={allowanceLabel}
-                    className={ringColor}
-                  >
-                    {ringText}
-                  </CircularProgress>
+                  {allowanceText}
                 </TooltipTrigger>
                 <TooltipContent>
                   <div className='flex flex-col gap-1'>
@@ -227,24 +203,26 @@ export function NovelAIBalance(props: {
               </Tooltip>
             </>
           )}
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <Button
-                  variant='ghost'
-                  size='icon-xs'
-                  aria-label={t('Refresh NovelAI resources')}
-                  disabled={query.isFetching}
-                  onClick={() => {
-                    void query.refetch()
-                  }}
-                >
-                  <HugeiconsIcon icon={RefreshIcon} aria-hidden='true' />
-                </Button>
-              }
-            />
-            <TooltipContent>{t('Refresh NovelAI resources')}</TooltipContent>
-          </Tooltip>
+          {props.detailed && (
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <Button
+                    variant='ghost'
+                    size='icon-xs'
+                    aria-label={t('Refresh NovelAI resources')}
+                    disabled={query.isFetching}
+                    onClick={() => {
+                      void query.refetch()
+                    }}
+                  >
+                    <HugeiconsIcon icon={RefreshIcon} aria-hidden='true' />
+                  </Button>
+                }
+              />
+              <TooltipContent>{t('Refresh NovelAI resources')}</TooltipContent>
+            </Tooltip>
+          )}
         </div>
         {query.isError && (
           <span

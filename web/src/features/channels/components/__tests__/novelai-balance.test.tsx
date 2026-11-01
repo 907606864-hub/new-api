@@ -37,6 +37,7 @@ import { channelSchema, type NovelAIBalance } from '../../types'
 import { BalanceCell } from '../channels-columns'
 import { ChannelsProvider, useChannels } from '../channels-provider'
 import { BalanceQueryDialog } from '../dialogs/balance-query-dialog'
+import { NovelAIBalance as NovelAIBalancePanel } from '../novelai-balance'
 
 let client: QueryClient
 const channel = channelSchema.parse({
@@ -91,20 +92,27 @@ function Actions() {
   )
 }
 
-function panel(multiKey = false) {
+function panel(multiKey = false, detailed = false) {
   return (
     <QueryClientProvider client={client}>
       <ChannelsProvider>
-        <BalanceCell
-          channel={
-            multiKey
-              ? {
-                  ...channel,
-                  channel_info: { ...channel.channel_info, is_multi_key: true },
-                }
-              : channel
-          }
-        />
+        {detailed ? (
+          <NovelAIBalancePanel channel={channel} detailed />
+        ) : (
+          <BalanceCell
+            channel={
+              multiKey
+                ? {
+                    ...channel,
+                    channel_info: {
+                      ...channel.channel_info,
+                      is_multi_key: true,
+                    },
+                  }
+                : channel
+            }
+          />
+        )}
         <Actions />
       </ChannelsProvider>
     </QueryClientProvider>
@@ -122,21 +130,22 @@ afterEach(() => {
   localStorage.clear()
 })
 
-it('shows Anlas and a fixed-size allowance ring side by side, with separate wallet details', async () => {
+it('shows only Anlas and allowance text side by side, with separate wallet details', async () => {
   vi.spyOn(api, 'get').mockResolvedValue({
     data: { success: true, novelai: fixture() },
   })
   const user = userEvent.setup()
   render(panel())
   const anlas = await screen.findByLabelText('10,011 Anlas')
-  const ring = screen.getByRole('progressbar', { name: 'V5 allowance' })
-  expect(ring).toHaveAttribute('aria-valuenow', '64')
-  expect(ring).toHaveAttribute('aria-valuetext', '64%')
-  expect(ring).toHaveClass('size-10', 'shrink-0')
+  const allowance = screen.getByLabelText('V5 allowance')
+  expect(allowance).toHaveTextContent('64%')
   const group = screen.getByRole('group', { name: 'NovelAI' })
   expect(group).toHaveClass('flex-row', 'items-center')
   expect(within(group).getByLabelText('10,011 Anlas')).toBe(anlas)
-  expect(within(group).getByRole('progressbar')).toBe(ring)
+  expect(within(group).getByLabelText('V5 allowance')).toBe(allowance)
+  expect(within(group).queryByRole('progressbar')).not.toBeInTheDocument()
+  expect(within(group).queryByRole('button')).not.toBeInTheDocument()
+  expect(group.querySelector('svg')).toBeNull()
   await user.tab()
   expect(await screen.findByText('Subscription Anlas')).toBeInTheDocument()
   expect(screen.getByText('9,911')).toBeInTheDocument()
@@ -181,18 +190,18 @@ it('shares the same read-only snapshot with the balance dialog and hides all amo
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   )
   await user.click(screen.getByRole('button', { name: 'Hide' }))
-  expect(screen.queryByRole('progressbar')).not.toBeInTheDocument()
+  expect(screen.queryByLabelText('V5 allowance')).not.toBeInTheDocument()
   expect(screen.queryByLabelText('10,011 Anlas')).not.toBeInTheDocument()
   expect(screen.queryByText('9,911')).not.toBeInTheDocument()
 })
 
 it.each([
-  { percent: 0, exhausted: false, now: '0', label: '0%' },
-  { percent: 0, exhausted: true, now: '0', label: '0% (Exhausted)' },
-  { percent: 135, exhausted: false, now: '100', label: '135%' },
+  { percent: 0, exhausted: false, label: '0%' },
+  { percent: 0, exhausted: true, label: '0% (Exhausted)' },
+  { percent: 135, exhausted: false, label: '135%' },
 ])(
   'preserves zero and over-cap allowance without treating zero Anlas as USD: $label',
-  async ({ percent, exhausted, now, label }) => {
+  async ({ percent, exhausted, label }) => {
     const data = fixture()
     data.trainingStepsLeft = {
       fixedTrainingStepsLeft: 0,
@@ -209,9 +218,9 @@ it.each([
     })
     render(panel())
     expect(await screen.findByLabelText('0 Anlas')).toBeInTheDocument()
-    const ring = screen.getByRole('progressbar')
-    expect(ring).toHaveAttribute('aria-valuenow', now)
-    expect(ring).toHaveAttribute('aria-valuetext', label)
+    const allowance = screen.getByLabelText('V5 allowance')
+    expect(allowance).toHaveTextContent(`${percent}%`)
+    expect(allowance).toHaveAttribute('aria-description', label)
     await userEvent
       .setup()
       .click(screen.getByRole('button', { name: 'Details' }))
@@ -233,10 +242,7 @@ it('keeps absent allowance and a missing purchased wallet unknown rather than fr
   })
   render(panel())
   expect(await screen.findByLabelText('Unknown Anlas')).toBeInTheDocument()
-  const ring = screen.getByRole('progressbar')
-  expect(ring).not.toHaveAttribute('aria-valuenow')
-  expect(ring).toHaveAttribute('aria-valuetext', 'Unknown')
-  expect(ring).toHaveTextContent('?')
+  expect(screen.getByLabelText('V5 allowance')).toHaveTextContent('Unknown')
 })
 
 it('shows query failures, retries from the refresh icon and labels stale snapshots after failed refreshes', async () => {
@@ -244,7 +250,7 @@ it('shows query failures, retries from the refresh icon and labels stale snapsho
     data: { success: false, message: 'Query failed' },
   })
   const user = userEvent.setup()
-  render(panel())
+  render(panel(false, true))
   expect(await screen.findByRole('status')).toHaveTextContent(
     'Failed to query balance'
   )
@@ -271,7 +277,7 @@ it('disables duplicate refresh requests while loading and allows refreshing afte
         complete = resolve
       })
   )
-  render(panel())
+  render(panel(false, true))
   expect(
     screen.getByRole('button', { name: 'Refresh NovelAI resources' })
   ).toBeDisabled()
