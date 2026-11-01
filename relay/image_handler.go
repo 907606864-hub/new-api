@@ -11,6 +11,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/logger"
+	"github.com/QuantumNous/new-api/pkg/billingexpr"
 	"github.com/QuantumNous/new-api/relay/channel/novelai"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relay/helper"
@@ -26,6 +27,9 @@ func ImageHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *type
 	info.InitChannelMeta(c)
 	info.BillingImageCount = nil
 	info.ImageRequestCount = 0
+	if info.BillingRequestInput != nil {
+		info.BillingRequestInput.ImageCredits = nil
+	}
 
 	imageReq, ok := info.Request.(*dto.ImageRequest)
 	if !ok {
@@ -134,6 +138,16 @@ func ImageHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *type
 	}
 	if info.ApiType == constant.APITypeNovelAI && jsonData == nil {
 		return types.NewErrorWithStatusCode(errors.New("NovelAI requires a JSON image generation request"), types.ErrorCodeInvalidRequest, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
+	}
+	if snap := info.TieredBillingSnapshot; snap != nil && billingexpr.UsedVarsByHash(snap.ExprString, snap.ExprHash)["image_credits"] {
+		if info.ApiType != constant.APITypeNovelAI || info.BillingRequestInput == nil {
+			return types.NewErrorWithStatusCode(errors.New("image_credits is only supported by NovelAI image estimation"), types.ErrorCodeModelPriceError, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
+		}
+		credits, err := novelai.EstimateImageCredits(c, info, jsonData)
+		if err != nil {
+			return types.NewErrorWithStatusCode(err, types.ErrorCodeModelPriceError, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
+		}
+		info.BillingRequestInput.ImageCredits = &credits
 	}
 	if billingErr := service.PrepareImageBillingForRequest(c, info, imageCount); billingErr != nil {
 		return billingErr

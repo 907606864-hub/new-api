@@ -14,6 +14,9 @@ type RequestInput struct {
 	// ImageCount is a validated billing quantity, separate from the frozen
 	// request's n. Settlement can replace it with the actual returned count.
 	ImageCount *int
+	// ImageCredits is a host-derived vendor credit quantity, never tokens.
+	// A nil value is unknown, not a free request.
+	ImageCredits *int
 }
 
 // TokenParams holds all token dimensions passed into an Expr evaluation.
@@ -50,6 +53,7 @@ const (
 
 // TraceResult holds side-channel info captured while an expression runs.
 type TraceResult struct {
+	ImageCredits *int               `json:"image_credits,omitempty"`
 	ImageCount   *int               `json:"image_count,omitempty"`
 	BillingUnit  BillingUnit        `json:"billing_unit"`
 	FixedPrice   *float64           `json:"fixed_price,omitempty"`
@@ -85,6 +89,7 @@ type BillingSnapshot struct {
 
 // TieredResult holds everything needed after running tiered settlement.
 type TieredResult struct {
+	ImageCredits *int `json:"image_credits,omitempty"`
 	// BillingTokens records the actual normalized inputs for successful token
 	// billing that explicitly references img_cr. Logs serialize these through
 	// the shared injection path, not as additional snapshot state.

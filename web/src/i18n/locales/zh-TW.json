@@ -7382,6 +7382,9 @@
     "Refresh NovelAI resources": "重新整理 NAI 電量和點數",
     "NovelAI balance request failed": "NAI 額度查詢失敗",
     "NovelAI balance request failed (HTTP {{status}})": "NAI 額度查詢失敗（HTTP {{status}}）",
-    "Invalid NovelAI subscription response": "NAI 傳回的訂閱資訊無效"
+    "Invalid NovelAI subscription response": "NAI 傳回的訂閱資訊無效",
+    "Estimated Anlas": "預估 Anlas",
+    "Anlas unit price": "Anlas 單價",
+    "Anlas": "Anlas"
   }
 }

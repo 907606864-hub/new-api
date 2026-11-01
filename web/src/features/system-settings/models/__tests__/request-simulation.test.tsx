@@ -31,6 +31,29 @@ const requestExpression =
 afterEach(() => vi.useRealTimers())
 
 describe('request simulation', () => {
+  test('simulates estimated Anlas without tokens and rejects an empty quantity', async () => {
+    render(
+      <RequestSimulation
+        expression='tier("anlas", fixed(0.0025)) * image_credits'
+        mode='token'
+        currency={USD_PRICING_CURRENCY}
+      />
+    )
+    await userEvent
+      .setup()
+      .click(screen.getByRole('button', { name: 'Request simulation' }))
+    expect(screen.getByRole('status')).toHaveTextContent(
+      'Simulated request cost: $0'
+    )
+    const input = screen.getByRole('spinbutton', { name: 'Estimated Anlas' })
+    fireEvent.change(input, { target: { value: '26' } })
+    expect(screen.getByRole('status')).toHaveTextContent(
+      'Simulated request cost: $0.065'
+    )
+    fireEvent.change(input, { target: { value: '' } })
+    expect(screen.getByRole('alert')).toHaveTextContent('image_credits')
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+  })
   test('explains absent task usage instead of showing a token estimator syntax error', () => {
     render(
       <TieredPricingEditor

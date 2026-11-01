@@ -248,6 +248,24 @@ class BillingRuntime {
       return { value: node.value, integer: node.integer }
     }
     if (node.kind === 'variable') {
+      if (node.name === 'image_credits') {
+        const value = this.context.imageCredits
+        if (value === undefined) {
+          throw new BillingExpressionError({
+            code: 'missing_context',
+            detail: 'image_credits',
+            position: node.start,
+          })
+        }
+        if (!Number.isInteger(value) || value < 0 || value > 2147483647) {
+          throw new BillingExpressionError({
+            code: 'number',
+            detail: 'image_credits must be between 0 and 2147483647',
+            position: node.start,
+          })
+        }
+        return { value }
+      }
       if (node.name === 'image_count') {
         const value = this.context.imageCount ?? 1
         if (!Number.isInteger(value) || value < 1 || value > 128) {
@@ -560,6 +578,9 @@ export function evaluateBillingExpression(
       billingUnit: runtime.billingUnit,
       ...(compiled.variables.has('image_count')
         ? { imageCount: context.imageCount ?? 1 }
+        : {}),
+      ...(compiled.variables.has('image_credits')
+        ? { imageCredits: context.imageCredits }
         : {}),
       ...(runtime.fixedPrice !== undefined
         ? { fixedPrice: runtime.fixedPrice }

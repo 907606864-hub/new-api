@@ -319,7 +319,7 @@ export interface TieredBillingSummary {
     field: string
     shortLabel: string
     price: number
-    unit?: 'request' | 'image'
+    unit?: 'request' | 'image' | 'Anlas'
   }>
 }
 
@@ -359,6 +359,25 @@ export function getTieredBillingSummary(
     other.fixed_price >= 0
   ) {
     const fixedPrice = other.fixed_price
+    if (other.image_credits !== undefined) {
+      return {
+        tiers,
+        tier: {
+          label: other.matched_tier || '',
+          conditions: [],
+          billingUnit: 'request',
+          fixedPrice,
+        },
+        priceEntries: [
+          {
+            field: 'fixedPrice',
+            shortLabel: 'Anlas unit price',
+            price: fixedPrice,
+            unit: 'Anlas',
+          },
+        ],
+      }
+    }
     const actualTier = tiers.find(
       (entry) =>
         normalizeTierLabel(entry.label) ===

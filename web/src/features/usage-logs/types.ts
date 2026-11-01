@@ -223,6 +223,8 @@ export interface LogOtherData {
   billing_unit?: 'token' | 'request'
   fixed_price?: number
   image_count?: number
+  image_credits?: number
+  image_credit_source?: string
   expr_b64?: string
   matched_tier?: string
   request_rules?: RequestRuleTrace[]

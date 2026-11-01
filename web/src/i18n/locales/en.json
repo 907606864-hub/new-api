@@ -7382,6 +7382,9 @@
     "Refresh NovelAI resources": "Refresh NovelAI resources",
     "NovelAI balance request failed": "NovelAI balance request failed",
     "NovelAI balance request failed (HTTP {{status}})": "NovelAI balance request failed (HTTP {{status}})",
-    "Invalid NovelAI subscription response": "Invalid NovelAI subscription response"
+    "Invalid NovelAI subscription response": "Invalid NovelAI subscription response",
+    "Estimated Anlas": "Estimated Anlas",
+    "Anlas unit price": "Anlas unit price",
+    "Anlas": "Anlas"
   }
 }

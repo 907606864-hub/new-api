@@ -443,7 +443,10 @@ function validateFixedPricingTree(
       [node.right, node.left],
       [node.left, node.right],
     ]) {
-      if (factor.kind === 'variable' && factor.name === 'image_count') {
+      if (
+        factor.kind === 'variable' &&
+        (factor.name === 'image_count' || factor.name === 'image_credits')
+      ) {
         validateFixedPricingTree(pricing, rules)
         return
       }

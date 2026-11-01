@@ -41,6 +41,23 @@ func TestFixedPriceBranches(t *testing.T) {
 	}
 }
 
+func TestImageCreditsAreIndependentFromTokensAndRequireHostContext(t *testing.T) {
+	const expression = `tier("anlas", fixed(0.0025)) * image_credits`
+	for _, credits := range []int{0, 17, 26} {
+		cost, trace, err := billingexpr.RunExprWithRequest(expression, billingexpr.TokenParams{P: 99999, C: 99999},
+			billingexpr.RequestInput{ImageCredits: &credits})
+		require.NoError(t, err)
+		assert.InDelta(t, float64(credits)*2500, cost, 1e-9)
+		assert.Equal(t, &credits, trace.ImageCredits)
+		assert.Equal(t, billingexpr.BillingUnitRequest, trace.BillingUnit)
+	}
+	for _, credits := range []*int{nil, common.GetPointer(-1), common.GetPointer(math.MaxInt32 + 1)} {
+		_, _, err := billingexpr.RunExprWithRequest(expression, billingexpr.TokenParams{},
+			billingexpr.RequestInput{ImageCredits: credits})
+		require.ErrorContains(t, err, "image_credits")
+	}
+}
+
 func TestFixedPriceRejectsInvalidLeavesIncludingUnselectedBranches(t *testing.T) {
 	for _, expression := range []string{
 		`true ? tier("ok", p) : tier("bad", fixed(-0.01))`,

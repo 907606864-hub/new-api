@@ -7382,6 +7382,9 @@
     "Refresh NovelAI resources": "Làm mới tài nguyên NovelAI",
     "NovelAI balance request failed": "Không thể truy vấn số dư NovelAI",
     "NovelAI balance request failed (HTTP {{status}})": "Không thể truy vấn số dư NovelAI (HTTP {{status}})",
-    "Invalid NovelAI subscription response": "Phản hồi đăng ký NovelAI không hợp lệ"
+    "Invalid NovelAI subscription response": "Phản hồi đăng ký NovelAI không hợp lệ",
+    "Estimated Anlas": "Anlas ước tính",
+    "Anlas unit price": "Đơn giá Anlas",
+    "Anlas": "Anlas"
   }
 }

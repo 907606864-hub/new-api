@@ -61,6 +61,45 @@ const extras: ExtraTokenValues = {
   audioOutputTokens: 0,
 }
 
+test('vendor image credits require explicit context and remain independent of tokens', () => {
+  const expression = 'tier("anlas", fixed(0.0025)) * image_credits'
+  expect(evaluateBillingExpression(expression).status).toBe('missing_context')
+  for (const imageCredits of [-1, 1.5, 2147483648, Infinity]) {
+    expect(evaluateBillingExpression(expression, { imageCredits }).status).toBe(
+      'invalid'
+    )
+  }
+  for (const imageCredits of [0, 26]) {
+    expect(
+      evaluateBillingExpression(expression, {
+        imageCredits,
+        tokens: { p: 99999, c: 99999 },
+      })
+    ).toMatchObject({
+      status: 'success',
+      cost: imageCredits * 2500,
+      billingUnit: 'request',
+      imageCredits,
+    })
+  }
+  expect(
+    getTieredBillingSummary({
+      billing_mode: 'tiered_expr',
+      expr_b64: btoa(expression),
+      billing_unit: 'request',
+      fixed_price: 0.0025,
+      image_credits: 26,
+    })?.priceEntries
+  ).toEqual([
+    {
+      field: 'fixedPrice',
+      shortLabel: 'Anlas unit price',
+      price: 0.0025,
+      unit: 'Anlas',
+    },
+  ])
+})
+
 test('parses a 12-hour cache write price and regenerates the expression unchanged', () => {
   const source =
     'tier("base", p * 10 + c * 40 + cr * 1 + cc * 12.5 + cc12h * 25)'

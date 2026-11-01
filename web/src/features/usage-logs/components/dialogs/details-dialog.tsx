@@ -1228,17 +1228,24 @@ export function DetailsDialog(props: DetailsDialogProps) {
                 value={other.image_count}
               />
             )}
-            <DynamicPricingBreakdown
-              compact
-              billingExpr={decodeBillingExprB64(other.expr_b64)}
-              matchedTierLabel={other.matched_tier}
-              matchedBillingUnit={other.billing_unit}
-              matchedFixedPrice={other.fixed_price}
-              requestRules={other.request_rules}
-              hideCacheColumns={!hasAnyCacheTokens(other)}
-              usageSchema={billingUsageSchema}
-              usageFacts={other.usage_facts}
-            />
+            {other.image_credits !== undefined ? (
+              <DetailRow
+                label={t('Estimated Anlas')}
+                value={formatTokens(other.image_credits)}
+              />
+            ) : (
+              <DynamicPricingBreakdown
+                compact
+                billingExpr={decodeBillingExprB64(other.expr_b64)}
+                matchedTierLabel={other.matched_tier}
+                matchedBillingUnit={other.billing_unit}
+                matchedFixedPrice={other.fixed_price}
+                requestRules={other.request_rules}
+                hideCacheColumns={!hasAnyCacheTokens(other)}
+                usageSchema={billingUsageSchema}
+                usageFacts={other.usage_facts}
+              />
+            )}
           </DetailSection>
         )}
 

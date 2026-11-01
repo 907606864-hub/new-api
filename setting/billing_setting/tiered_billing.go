@@ -214,14 +214,21 @@ func smokeTestExpr(exprStr string) error {
 		{Len: math.MaxInt32, ImgCR: math.MaxInt32},
 	}
 
+	creditVectors := []int{0}
+	if billingexpr.UsedVars(exprStr)["image_credits"] {
+		creditVectors = []int{0, 1, math.MaxInt32}
+	}
 	for _, v := range vectors {
 		for _, request := range billingExprSmokeRequests() {
-			result, _, err := billingexpr.RunExprWithRequest(exprStr, v, request)
-			if err != nil {
-				return fmt.Errorf("vector {p=%g, c=%g}: run failed: %w", v.P, v.C, err)
-			}
-			if math.IsNaN(result) || math.IsInf(result, 0) || result < 0 {
-				return fmt.Errorf("vector {p=%g, c=%g}: result must be finite and non-negative, got %f", v.P, v.C, result)
+			for _, credits := range creditVectors {
+				request.ImageCredits = &credits
+				result, _, err := billingexpr.RunExprWithRequest(exprStr, v, request)
+				if err != nil {
+					return fmt.Errorf("vector {p=%g, c=%g}: run failed: %w", v.P, v.C, err)
+				}
+				if math.IsNaN(result) || math.IsInf(result, 0) || result < 0 {
+					return fmt.Errorf("vector {p=%g, c=%g}: result must be finite and non-negative, got %f", v.P, v.C, result)
+				}
 			}
 		}
 	}

@@ -341,6 +341,10 @@ func InjectTieredBillingInfo(other *model.LogOther, relayInfo *relaycommon.Relay
 	}
 	other.SetPublic("billing_mode", "tiered_expr")
 	other.SetPublic("expr_b64", base64.StdEncoding.EncodeToString([]byte(snap.ExprString)))
+	if input := relayInfo.BillingRequestInput; input != nil && input.ImageCredits != nil {
+		other.SetPublic("image_credits", *input.ImageCredits)
+		other.SetPublic("image_credit_source", "novelai_estimate")
+	}
 	if result != nil {
 		if tokens := result.BillingTokens; tokens != nil && result.BillingUnit == billingexpr.BillingUnitToken {
 			other.SetPublic("image_cache_tokens", tokens.ImgCR)

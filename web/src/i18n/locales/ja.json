@@ -7382,6 +7382,9 @@
     "Refresh NovelAI resources": "NovelAI の残量を更新",
     "NovelAI balance request failed": "NovelAI の残高取得に失敗しました",
     "NovelAI balance request failed (HTTP {{status}})": "NovelAI の残高取得に失敗しました (HTTP {{status}})",
-    "Invalid NovelAI subscription response": "NovelAI のサブスクリプション応答が無効です"
+    "Invalid NovelAI subscription response": "NovelAI のサブスクリプション応答が無効です",
+    "Estimated Anlas": "推定 Anlas",
+    "Anlas unit price": "Anlas 単価",
+    "Anlas": "Anlas"
   }
 }

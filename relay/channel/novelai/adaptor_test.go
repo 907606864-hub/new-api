@@ -110,6 +110,66 @@ func TestImageModelDefaults(t *testing.T) {
 	}
 }
 
+func TestImageCreditEstimatesUseFinalParametersAndSubscriptionState(t *testing.T) {
+	const active = `{"active":true,"tier":3,"expiresAt":2147483647,"usage":{"isNegative":false}}`
+	for _, tc := range []struct {
+		name, body, subscription, wantError string
+		wantCredits, wantQueries            int
+		status                              int
+	}{
+		{name: "Opus V5 Medium small image", body: `{"model":"nai-diffusion-5-full-medium","prompt":"test"}`, subscription: active, wantQueries: 1},
+		{name: "V5 exhausted costs 17 credits", body: `{"model":"nai-diffusion-5-full-medium","prompt":"test"}`, subscription: `{"active":true,"tier":3,"expiresAt":2147483647,"usage":{"isNegative":true}}`, wantCredits: 17, wantQueries: 1},
+		{name: "unknown V5 allowance is not free", body: `{"model":"nai-diffusion-5-full-medium","prompt":"test"}`, subscription: `{"active":true,"tier":3,"expiresAt":2147483647}`, wantError: "unknown", wantQueries: 1},
+		{name: "non Opus small image costs credits", body: `{"model":"nai-diffusion-5-full-medium","prompt":"test"}`, subscription: `{"active":true,"tier":2,"expiresAt":2147483647}`, wantCredits: 17, wantQueries: 1},
+		{name: "expired Opus is not free", body: `{"model":"nai-diffusion-5-full-medium","prompt":"test"}`, subscription: `{"active":true,"tier":3,"expiresAt":1}`, wantCredits: 17, wantQueries: 1},
+		{name: "V4 Opus does not need V5 allowance", body: `{"model":"nai-diffusion-4-5-full","prompt":"test"}`, subscription: `{"active":true,"tier":3,"expiresAt":2147483647}`, wantQueries: 1},
+		{name: "V5 Medium large image", body: `{"model":"nai-diffusion-5-full-medium","prompt":"test","size":"1024x1536"}`, wantCredits: 26},
+		{name: "native dimensions determine credits", body: `{"model":"nai-diffusion-5-full-medium","prompt":"test","parameters":{"width":1024,"height":1536}}`, wantCredits: 26},
+		{name: "V4 large SMEA", body: `{"model":"nai-diffusion-4-5-full","prompt":"test","size":"1024x1536","parameters":{"steps":28,"sm":true}}`, wantCredits: 36},
+		{name: "batch is not estimated", body: `{"model":"nai-diffusion-5-full-medium","prompt":"test","n":2}`, wantError: "single-image"},
+		{name: "reference is not silently free", body: `{"model":"nai-diffusion-5-full-medium","prompt":"test","parameters":{"reference_image_multiple":["image"]}}`, wantError: "references"},
+		{name: "upscale is not silently free", body: `{"model":"nai-diffusion-5-full-medium","prompt":"test","parameters":{"upscale":{}}}`, wantError: "references"},
+		{name: "unsupported model", body: `{"model":"unknown","prompt":"test"}`, wantError: "model"},
+		{name: "fractional steps", body: `{"model":"nai-diffusion-5-full-medium","prompt":"test","parameters":{"steps":14.5}}`, wantError: "integer"},
+		{name: "Medium fixed settings", body: `{"model":"nai-diffusion-5-full-medium","prompt":"test","parameters":{"steps":10}}`, wantError: "14 steps"},
+		{name: "subscription failure", body: `{"model":"nai-diffusion-5-full-medium","prompt":"test"}`, status: 502, wantError: "query failed", wantQueries: 1},
+		{name: "subscription redirect is not followed", body: `{"model":"nai-diffusion-5-full-medium","prompt":"test"}`, status: 302, wantError: "query failed", wantQueries: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			queries := 0
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				queries++
+				assert.Equal(t, "/user/subscription", r.URL.Path)
+				assert.Equal(t, "Bearer fixture-upstream-token", r.Header.Get("Authorization"))
+				if tc.status != 0 {
+					w.Header().Set("Location", "https://example.invalid/")
+					w.WriteHeader(tc.status)
+				}
+				_, _ = io.WriteString(w, tc.subscription)
+			}))
+			t.Cleanup(upstream.Close)
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/generations", nil)
+			info := &relaycommon.RelayInfo{RelayMode: relayconstant.RelayModeImagesGenerations,
+				ChannelMeta: &relaycommon.ChannelMeta{ChannelBaseUrl: upstream.URL, ApiKey: "fixture-upstream-token"}}
+			var request dto.ImageRequest
+			require.NoError(t, common.UnmarshalJsonStr(tc.body, &request))
+			converted, err := (&novelai.Adaptor{}).ConvertImageRequest(c, info, request)
+			require.NoError(t, err)
+			body, err := common.Marshal(converted)
+			require.NoError(t, err)
+			credits, err := novelai.EstimateImageCredits(c, info, body)
+			if tc.wantError != "" {
+				require.ErrorContains(t, err, tc.wantError)
+			} else {
+				require.NoError(t, err)
+				assert.Equal(t, tc.wantCredits, credits)
+			}
+			assert.Equal(t, tc.wantQueries, queries)
+		})
+	}
+}
+
 func TestOfficialJSONResponseThroughRegisteredAdaptor(t *testing.T) {
 	service.InitHttpClient()
 	for _, stream := range []bool{false, true} {
@@ -398,6 +458,8 @@ func TestGatewayImageBilling(t *testing.T) {
 	t.Cleanup(func() { api(t, "DELETE", tokenPath, admin, nil) })
 
 	var calls, returned, upstreamStatus, receivedQuantity atomic.Int64
+	var subscriptionBody atomic.Value
+	subscriptionBody.Store(`{"active":true,"tier":3,"expiresAt":2147483647,"usage":{"isNegative":false}}`)
 	returned.Store(1)
 	upstreamStatus.Store(http.StatusCreated)
 	bind := os.Getenv("NAI_FIXTURE_BIND")
@@ -409,6 +471,12 @@ func TestGatewayImageBilling(t *testing.T) {
 	ip := listener.Addr().(*net.TCPAddr).IP
 	require.True(t, ip.IsLoopback() || ip.IsPrivate(), "fixture must not listen on a public interface")
 	fixture := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/user/subscription" {
+			assert.Equal(t, "Bearer fixture-upstream-token", r.Header.Get("Authorization"))
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, subscriptionBody.Load().(string))
+			return
+		}
 		calls.Add(1)
 		assert.Equal(t, "/ai/generate-image", r.URL.Path)
 		assert.Equal(t, "Bearer fixture-upstream-token", r.Header.Get("Authorization"))
@@ -417,7 +485,7 @@ func TestGatewayImageBilling(t *testing.T) {
 		if !assert.NoError(t, err) {
 			return
 		}
-		assert.Equal(t, "nai-diffusion-4-5-full", gjson.GetBytes(body, "model").String())
+		assert.Contains(t, []string{"nai-diffusion-4-5-full", "nai-diffusion-5-full-medium"}, gjson.GetBytes(body, "model").String())
 		receivedQuantity.Store(gjson.GetBytes(body, "parameters.n_samples").Int())
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(int(upstreamStatus.Load()))
@@ -436,13 +504,13 @@ func TestGatewayImageBilling(t *testing.T) {
 	fixture.Start()
 	t.Cleanup(fixture.Close)
 
-	const paid, free, legacy = "nai-diffusion-gateway-paid", "nai-diffusion-gateway-free", "nai-diffusion-gateway-legacy"
-	mapping, err := common.Marshal(map[string]string{paid: "nai-diffusion-4-5-full", free: "nai-diffusion-4-5-full", legacy: "nai-diffusion-4-5-full"})
+	const paid, free, legacy, estimated = "nai-diffusion-gateway-paid", "nai-diffusion-gateway-free", "nai-diffusion-gateway-legacy", "nai-diffusion-gateway-credits"
+	mapping, err := common.Marshal(map[string]string{paid: "nai-diffusion-4-5-full", free: "nai-diffusion-4-5-full", legacy: "nai-diffusion-4-5-full", estimated: "nai-diffusion-5-full-medium"})
 	require.NoError(t, err)
 	api(t, "POST", "/api/channel/", admin, map[string]any{
 		"mode": "single", "channel": map[string]any{
 			"type": constant.ChannelTypeNovelAI, "name": "nai-gateway-test", "key": "fixture-upstream-token",
-			"base_url": fixture.URL, "models": strings.Join([]string{paid, free, legacy}, ","), "group": "default",
+			"base_url": fixture.URL, "models": strings.Join([]string{paid, free, legacy, estimated}, ","), "group": "default",
 			"model_mapping": string(mapping), "auto_ban": 0,
 		},
 	})
@@ -453,7 +521,7 @@ func TestGatewayImageBilling(t *testing.T) {
 	t.Cleanup(func() { api(t, "DELETE", channelPath, admin, nil) })
 	snapshot := api(t, "GET", "/api/option/model_pricing", admin, nil)
 	changes := []map[string]any{}
-	for _, name := range []string{paid, free, legacy} {
+	for _, name := range []string{paid, free, legacy, estimated} {
 		version := snapshot.Get("empty_version").String()
 		for _, entry := range snapshot.Get("entries").Array() {
 			if entry.Get("model_name").String() == name {
@@ -468,6 +536,8 @@ func TestGatewayImageBilling(t *testing.T) {
 			pricing["billing_setting.billing_expr"] = `tier("image", fixed(0)) * image_count`
 		} else if name == legacy {
 			pricing = map[string]any{"ModelPrice": 0.01}
+		} else if name == estimated {
+			pricing["billing_setting.billing_expr"] = `tier("anlas_estimate", fixed(0.0025)) * image_credits`
 		}
 		changes = append(changes, map[string]any{"model_name": name, "expected_version": version, "pricing": pricing})
 	}
@@ -561,6 +631,92 @@ func TestGatewayImageBilling(t *testing.T) {
 			}
 		})
 	}
+	for _, tc := range []struct {
+		name, size, subscription, override  string
+		parameters                          map[string]any
+		credits, images                     int64
+		upstreamStatus, status, channelType int
+		poor                                bool
+	}{
+		{name: "estimated Opus small image is free", images: 1},
+		{name: "exhausted V5 estimate uses Anlas", images: 1, credits: 17, subscription: `{"active":true,"tier":3,"expiresAt":2147483647,"usage":{"isNegative":true}}`},
+		{name: "unknown V5 usage cannot silently charge zero", status: 400, subscription: `{"active":true,"tier":3,"expiresAt":2147483647}`},
+		{name: "large estimate charges 26 Anlas", size: "1024x1536", images: 1, credits: 26},
+		{name: "channel dimension overrides reprice before sending", images: 1, credits: 26, override: `{"operations":[{"path":"parameters.width","mode":"set","value":1024},{"path":"parameters.height","mode":"set","value":1536}]}`},
+		{name: "credit reservation blocks insufficient token quota", size: "1024x1536", poor: true, status: 403},
+		{name: "reference features require explicit administrator pricing", parameters: map[string]any{"reference_image_multiple": []string{"image"}}, status: 400},
+		{name: "native batch cannot bypass single image estimate", parameters: map[string]any{"n_samples": 2}, status: 400},
+		{name: "credit estimate cannot be used on another provider", channelType: constant.ChannelTypeOpenAI, status: 400},
+		{name: "upstream failure refunds credit reservation", size: "1024x1536", upstreamStatus: 400, status: 400},
+		{name: "unexpected extra image refunds credit reservation", size: "1024x1536", images: 2, status: 502},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			subscription := tc.subscription
+			if subscription == "" {
+				subscription = `{"active":true,"tier":3,"expiresAt":2147483647,"usage":{"isNegative":false}}`
+			}
+			subscriptionBody.Store(subscription)
+			returned.Store(tc.images)
+			upstreamCode := tc.upstreamStatus
+			if upstreamCode == 0 {
+				upstreamCode = http.StatusCreated
+			}
+			upstreamStatus.Store(int64(upstreamCode))
+			channelType := tc.channelType
+			if channelType == 0 {
+				channelType = constant.ChannelTypeNovelAI
+			}
+			override := tc.override
+			if override == "" {
+				override = "{}"
+			}
+			api(t, "PUT", "/api/channel/", admin, map[string]any{"id": channelID, "type": channelType, "param_override": override})
+			quota := 1000000
+			if tc.poor {
+				quota = 1
+			}
+			api(t, "PUT", "/api/token/", admin, map[string]any{"id": tokenID, "name": "nai-gateway-test", "remain_quota": quota, "expired_time": -1, "group": "default"})
+			before := balances(t)
+			callCount := calls.Load()
+			size := tc.size
+			if size == "" {
+				size = "832x1216"
+			}
+			parameters := tc.parameters
+			if parameters == nil {
+				parameters = map[string]any{}
+			}
+			code, body := request(t, "POST", "/v1/images/generations", key, map[string]any{
+				"model": estimated, "prompt": "a landscape", "n": 1, "size": size, "parameters": parameters,
+				"image_credits": 0,
+			})
+			wantStatus := tc.status
+			if wantStatus == 0 {
+				wantStatus = http.StatusOK
+			}
+			require.Equal(t, wantStatus, code, "error code: %s", gjson.GetBytes(body, "error.code").String())
+			expectedCalls := int64(0)
+			if wantStatus == http.StatusOK || tc.upstreamStatus != 0 || tc.images == 2 {
+				expectedCalls = 1
+			}
+			assert.Equal(t, expectedCalls, calls.Load()-callCount)
+			want := before
+			if code == http.StatusOK {
+				charge := tc.credits * 1250
+				want = [6]int64{before[0] - charge, before[1] + charge, before[2] + 1, before[3] - charge, before[4] + charge, before[5] + charge}
+			}
+			require.Eventually(t, func() bool { return balances(t) == want }, 5*time.Second, 100*time.Millisecond,
+				"credit estimates, reservations and refunds must reconcile all accounts")
+			if code == http.StatusOK {
+				logs := api(t, "GET", "/api/log/?type=2&token_name=nai-gateway-test", admin, nil).Get("items").Array()
+				require.NotEmpty(t, logs)
+				assert.Equal(t, tc.credits*1250, logs[0].Get("quota").Int())
+				assert.Equal(t, tc.credits, gjson.Get(logs[0].Get("other").String(), "image_credits").Int())
+				assert.Equal(t, "novelai_estimate", gjson.Get(logs[0].Get("other").String(), "image_credit_source").String())
+				assert.LessOrEqual(t, logs[0].Get("prompt_tokens").Int(), int64(1), "Anlas must not be reported as tokens")
+			}
+		})
+	}
 	t.Run("unauthenticated request never reaches upstream", func(t *testing.T) {
 		before := calls.Load()
 		status, _ := request(t, "POST", "/v1/images/generations", "", map[string]any{"model": paid, "prompt": "test"})
@@ -585,7 +741,7 @@ func TestGatewayImageBilling(t *testing.T) {
 			width, height, expectedAnlas = 1024, 1536, 26
 			require.GreaterOrEqual(t, anlas, expectedAnlas)
 		}
-		liveMapping, err := common.Marshal(map[string]string{paid: liveModel, free: liveModel, legacy: liveModel})
+		liveMapping, err := common.Marshal(map[string]string{paid: liveModel, free: liveModel, legacy: liveModel, estimated: liveModel})
 		require.NoError(t, err)
 		api(t, "PUT", "/api/token/", admin, map[string]any{"id": tokenID, "name": "nai-gateway-test", "remain_quota": 1000000, "expired_time": -1, "group": "default"})
 		api(t, "PUT", "/api/channel/", admin, map[string]any{
@@ -618,8 +774,12 @@ func TestGatewayImageBilling(t *testing.T) {
 		require.Equal(t, anlas, *resourcesBefore.Points.Fixed+*resourcesBefore.Points.Purchased)
 		channelBefore := api(t, "GET", channelPath, admin, nil)
 		before := balances(t)
+		billingModel, expectedCharge := paid, int64(5000)
+		if os.Getenv("NAI_LIVE_CREDIT_BILLING") == "1" {
+			billingModel, expectedCharge = estimated, expectedAnlas*1250
+		}
 		code, body := request(t, "POST", "/v1/images/generations", key, map[string]any{
-			"model": paid, "prompt": "a quiet mountain lake, pine forest, blue sky, watercolor landscape, no people",
+			"model": billingModel, "prompt": "a quiet mountain lake, pine forest, blue sky, watercolor landscape, no people",
 			"n": 1, "size": fmt.Sprintf("%dx%d", width, height), "response_format": "b64_json",
 			"parameters": map[string]any{"steps": liveSteps},
 		})
@@ -635,17 +795,22 @@ func TestGatewayImageBilling(t *testing.T) {
 		// Balance deltas are evidence for this isolated manual test only,
 		// not a concurrency-safe source of per-request billing usage.
 		assert.Equal(t, expectedAnlas, anlas-anlasAfter, "upstream deduction must match the checked price")
-		want := [6]int64{before[0] - 5000, before[1] + 5000, before[2] + 1, before[3] - 5000, before[4] + 5000, before[5] + 5000}
+		want := [6]int64{before[0] - expectedCharge, before[1] + expectedCharge, before[2] + 1, before[3] - expectedCharge, before[4] + expectedCharge, before[5] + expectedCharge}
 		require.Eventually(t, func() bool { return balances(t) == want }, 5*time.Second, 100*time.Millisecond,
-			"test-only $0.01 image price must settle independently of upstream Anlas")
+			"the explicitly selected test price must reconcile all accounts")
 		channelAfter := api(t, "GET", channelPath, admin, nil)
 		assert.Equal(t, channelBefore.Get("balance").Raw, channelAfter.Get("balance").Raw)
 		assert.Equal(t, channelBefore.Get("balance_updated_time").Raw, channelAfter.Get("balance_updated_time").Raw,
 			"resource queries must not persist a USD balance")
 		logs := api(t, "GET", "/api/log/?type=2&token_name=nai-gateway-test", admin, nil).Get("items").Array()
 		require.NotEmpty(t, logs)
-		assert.Equal(t, int64(5000), logs[0].Get("quota").Int())
-		assert.Equal(t, int64(1), gjson.Get(logs[0].Get("other").String(), "image_count").Int())
+		assert.Equal(t, expectedCharge, logs[0].Get("quota").Int())
+		if billingModel == estimated {
+			assert.Equal(t, expectedAnlas, gjson.Get(logs[0].Get("other").String(), "image_credits").Int())
+			assert.Equal(t, "novelai_estimate", gjson.Get(logs[0].Get("other").String(), "image_credit_source").String())
+		} else {
+			assert.Equal(t, int64(1), gjson.Get(logs[0].Get("other").String(), "image_count").Int())
+		}
 		if path := os.Getenv("NAI_OUTPUT_PATH"); path != "" {
 			require.NoError(t, os.WriteFile(path, image, 0600))
 		}

@@ -161,6 +161,23 @@ OpenAI 已于 2026-05-12 下线 DALL·E 2/3；其校验、默认值和倍率保�
 （Qwen-Image-3.0 为 `usage.output_image_count`）或按各 `choices[].message.content[]` / `results[]`
 中的图片载荷数结算，任务消费日志同样记录 `image_count`。
 
+### Image Credits (Experimental)
+
+`image_credits` is a host-derived, non-negative integer vendor credit quantity,
+separate from tokens and image count. It must be present and at most int32 max;
+missing context is an error. For example,
+`tier("anlas", fixed(0.0025)) * image_credits` prices each Anlas at $0.0025.
+This is opt-in administrator pricing, not a built-in price for all NAI models.
+
+The experimental NovelAI host derives this quantity from the final outbound
+parameters and a fresh subscription snapshot. It supports ordinary single-image
+text-to-image only. Unsupported features and unknown V5 allowance fail closed.
+Before every attempt, the host recomputes and reserves the estimate, including
+channel overrides; failures follow normal refunds. The snapshot is not an
+upstream usage receipt: another client can change the allowance before
+generation. Logs explicitly record `image_credit_source: "novelai_estimate"`.
+No account balance delta is used for production settlement.
+
 > **注意：** 自动扣除针对 GPT/OpenAI 格式的 API（prompt_tokens 包含子类别）。Claude 格式的 API 不重复扣除缓存；未独立计价的缓存读取和缓存写入加回输入。系统根据上游返回格式自动处理。
 
 ### Built-in Functions

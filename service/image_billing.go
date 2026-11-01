@@ -25,7 +25,7 @@ func PrepareImageBillingForRequest(c *gin.Context, info *relaycommon.RelayInfo, 
 	var err error
 	if snap := info.TieredBillingSnapshot; snap != nil && snap.BillingMode == "tiered_expr" {
 		// Token-only image expressions must not acquire a quantity multiplier.
-		if snap.EstimatedImageCount == nil {
+		if snap.EstimatedImageCount == nil && !billingexpr.UsedVarsByHash(snap.ExprString, snap.ExprHash)["image_credits"] {
 			return nil
 		}
 		request := billingexpr.RequestInput{}

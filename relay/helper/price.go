@@ -386,6 +386,14 @@ func modelPriceHelperTiered(c *gin.Context, info *relaycommon.RelayInfo, billing
 	if err != nil {
 		return hosttypes.PriceData{}, err
 	}
+	if usedVars["image_credits"] {
+		if _, image := info.Request.(*dto.ImageRequest); !image || !fixedPricing {
+			return hosttypes.PriceData{}, fmt.Errorf("image_credits requires fixed-price image billing")
+		}
+		// The effective channel parameters are not known yet. Reserve again
+		// from a host estimate in ImageHelper before contacting the provider.
+		requestInput.ImageCredits = common.GetPointer(0)
+	}
 	if usedVars["image_count"] {
 		requestInput, err = ResolveImageBillingRequestInput(c, info, requestInput)
 		if err != nil {

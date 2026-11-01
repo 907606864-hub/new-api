@@ -234,6 +234,9 @@ func (*Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycommo
 	if len(upstream.Images) == 0 || len(upstream.Images) > dto.MaxImageN {
 		return nil, types.NewOpenAIError(errors.New("NovelAI returned no images or an invalid image count"), types.ErrorCodeBadResponseBody, http.StatusBadGateway)
 	}
+	if info.BillingRequestInput != nil && info.BillingRequestInput.ImageCredits != nil && len(upstream.Images) != 1 {
+		return nil, types.NewOpenAIError(errors.New("NovelAI estimated credit pricing requires exactly one returned image"), types.ErrorCodeBadResponseBody, http.StatusBadGateway)
+	}
 	response := dto.ImageResponse{Created: time.Now().Unix()}
 	for _, image := range upstream.Images {
 		if strings.TrimSpace(image.Image) == "" {

@@ -78,12 +78,16 @@ export function RequestSimulation(props: RequestSimulationProps) {
   const timeId = useId()
   const imageCountId = useId()
   const [imageCount, setImageCount] = useState('1')
+  const imageCreditsId = useId()
+  const [imageCredits, setImageCredits] = useState('0')
   const compiled = useMemo(
     () => compileBillingExpression(props.expression),
     [props.expression]
   )
   const usesImageCount =
     compiled.status === 'ready' && compiled.variables.has('image_count')
+  const usesImageCredits =
+    compiled.status === 'ready' && compiled.variables.has('image_credits')
   const booleanFields = Object.entries(props.usageSchema ?? {}).filter(
     ([, field]) => field.type === 'boolean'
   )
@@ -171,6 +175,8 @@ export function RequestSimulation(props: RequestSimulationProps) {
     }
     return evaluateBillingExpression(props.expression, {
       imageCount: Number(imageCount),
+      imageCredits:
+        imageCredits.trim() === '' ? undefined : Number(imageCredits),
       tokens: props.tokens,
       usage,
       now,
@@ -182,6 +188,7 @@ export function RequestSimulation(props: RequestSimulationProps) {
   }, [
     open,
     imageCount,
+    imageCredits,
     body,
     headers,
     timeMode,
@@ -221,6 +228,22 @@ export function RequestSimulation(props: RequestSimulationProps) {
         {t('Request simulation')}
       </CollapsibleTrigger>
       <CollapsibleContent className='mt-3 space-y-4'>
+        {usesImageCredits && (
+          <Field>
+            <FieldLabel htmlFor={imageCreditsId}>
+              {t('Estimated Anlas')}
+            </FieldLabel>
+            <Input
+              id={imageCreditsId}
+              type='number'
+              min={0}
+              max={2147483647}
+              step={1}
+              value={imageCredits}
+              onChange={(event) => setImageCredits(event.target.value)}
+            />
+          </Field>
+        )}
         {usesImageCount && (
           <Field>
             <FieldLabel htmlFor={imageCountId}>

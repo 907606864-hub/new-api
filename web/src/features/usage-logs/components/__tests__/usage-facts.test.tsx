@@ -153,6 +153,25 @@ test('keeps one cache write row and no cache prices for OpenAI logs without 12-h
 })
 
 describe('usage facts billing details', () => {
+  test('shows estimated Anlas and their unit price without presenting them as tokens or a per-image price', () => {
+    const queryClient = renderDetails({
+      billing_mode: 'tiered_expr',
+      expr_b64: btoa('tier("anlas", fixed(0.0025)) * image_credits'),
+      billing_unit: 'request',
+      fixed_price: 0.0025,
+      image_credits: 26,
+      image_credit_source: 'novelai_estimate',
+      matched_tier: 'anlas',
+    })
+    expect(screen.getByText('Estimated Anlas').parentElement).toHaveTextContent(
+      '26'
+    )
+    expect(
+      screen.getByText('Anlas unit price').parentElement
+    ).toHaveTextContent('/Anlas')
+    expect(screen.queryByText('Billable image count')).not.toBeInTheDocument()
+    queryClient.clear()
+  })
   test('shows the settled image count and a per-image price', () => {
     const queryClient = renderDetails({
       billing_mode: 'tiered_expr',

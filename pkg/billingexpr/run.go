@@ -56,6 +56,14 @@ func runProgram(prog *vm.Program, requestRules []RequestRuleTrace, usedVars map[
 		RequestRules: append([]RequestRuleTrace(nil), requestRules...),
 	}
 	headers := normalizeHeaders(request.Headers)
+	imageCredits := 0
+	if usedVars["image_credits"] {
+		if request.ImageCredits == nil || *request.ImageCredits < 0 || *request.ImageCredits > math.MaxInt32 {
+			return 0, trace, fmt.Errorf("image_credits requires a host quantity between 0 and %d", math.MaxInt32)
+		}
+		imageCredits = *request.ImageCredits
+		trace.ImageCredits = &imageCredits
+	}
 	imageCount := 1
 	if usedVars["image_count"] {
 		if request.ImageCount != nil {
@@ -68,19 +76,20 @@ func runProgram(prog *vm.Program, requestRules []RequestRuleTrace, usedVars map[
 	}
 
 	env := map[string]any{
-		"image_count": float64(imageCount),
-		"p":           params.P,
-		"c":           params.C,
-		"len":         params.Len,
-		"cr":          params.CR,
-		"cc":          params.CC,
-		"cc1h":        params.CC1h,
-		"cc12h":       params.CC12h,
-		"img":         params.Img,
-		"img_cr":      params.ImgCR,
-		"img_o":       params.ImgO,
-		"ai":          params.AI,
-		"ao":          params.AO,
+		"image_credits": float64(imageCredits),
+		"image_count":   float64(imageCount),
+		"p":             params.P,
+		"c":             params.C,
+		"len":           params.Len,
+		"cr":            params.CR,
+		"cc":            params.CC,
+		"cc1h":          params.CC1h,
+		"cc12h":         params.CC12h,
+		"img":           params.Img,
+		"img_cr":        params.ImgCR,
+		"img_o":         params.ImgO,
+		"ai":            params.AI,
+		"ao":            params.AO,
 		"tier": func(name string, value float64) float64 {
 			trace.MatchedTier = name
 			trace.Cost = value
