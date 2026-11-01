@@ -82,6 +82,34 @@ func TestImageConversionRetainsMappedModelAndNativeParameters(t *testing.T) {
 	}
 }
 
+func TestImageModelDefaults(t *testing.T) {
+	for _, tc := range []struct {
+		model string
+		steps int64
+		scale float64
+	}{
+		{"nai-diffusion-5-full", 23, 7},
+		{"nai-diffusion-5-full-medium", 14, 7},
+		{"nai-diffusion-5-curated", 23, 7},
+		{"nai-diffusion-4-5-full", 23, 5},
+	} {
+		t.Run(tc.model, func(t *testing.T) {
+			adaptor := &novelai.Adaptor{}
+			require.Contains(t, adaptor.GetModelList(), tc.model)
+			info := &relaycommon.RelayInfo{RelayMode: relayconstant.RelayModeImagesGenerations}
+			converted, err := adaptor.ConvertImageRequest(nil, info, dto.ImageRequest{Model: tc.model, Prompt: "a landscape"})
+			require.NoError(t, err)
+			body, err := common.Marshal(converted)
+			require.NoError(t, err)
+			assert.Equal(t, tc.steps, gjson.GetBytes(body, "parameters.steps").Int())
+			assert.Equal(t, tc.scale, gjson.GetBytes(body, "parameters.scale").Float())
+			assert.Equal(t, "a landscape", gjson.GetBytes(body, "parameters.v4_prompt.caption.base_caption").String())
+			assert.Equal(t, int64(832), gjson.GetBytes(body, "parameters.width").Int())
+			assert.Equal(t, int64(1216), gjson.GetBytes(body, "parameters.height").Int())
+		})
+	}
+}
+
 func TestOfficialJSONResponseThroughRegisteredAdaptor(t *testing.T) {
 	service.InitHttpClient()
 	for _, stream := range []bool{false, true} {
@@ -165,7 +193,8 @@ func TestLiveOpusSmallImage(t *testing.T) {
 	}
 	token := os.Getenv("NAI_TOKEN")
 	require.NotEmpty(t, token, "NAI_TOKEN is required")
-	before := opusAnlasBalance(t, token)
+	liveModel, subscription := liveOpusImageModel(t, token)
+	before := *subscription.Points.Fixed + *subscription.Points.Purchased
 	service.InitHttpClient()
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
@@ -179,7 +208,7 @@ func TestLiveOpusSmallImage(t *testing.T) {
 	}
 	adaptor := &novelai.Adaptor{}
 	request, err := adaptor.ConvertImageRequest(c, info, dto.ImageRequest{
-		Model: "nai-diffusion-4-5-full", Prompt: "a quiet mountain lake, pine forest, blue sky, watercolor landscape, no people",
+		Model: liveModel, Prompt: "a quiet mountain lake, pine forest, blue sky, watercolor landscape, no people",
 		N: common.GetPointer(uint(1)), Size: "832x1216", ResponseFormat: "b64_json",
 	})
 	require.NoError(t, err)
@@ -204,10 +233,91 @@ func TestLiveOpusSmallImage(t *testing.T) {
 		require.NoError(t, os.WriteFile(path, image, 0600))
 		t.Logf("PNG output: %s (%dx%d)", path, config.Width, config.Height)
 	}
-	t.Logf("Opus small-image generation succeeded; Anlas before=%d after=%d", before, after)
+	t.Logf("Opus small-image generation succeeded; model=%s; Anlas before=%d after=%d", liveModel, before, after)
 }
 
-func opusAnlasBalance(t *testing.T, token string) int {
+type opusTestSubscription struct {
+	Active    bool  `json:"active"`
+	Tier      int   `json:"tier"`
+	ExpiresAt int64 `json:"expiresAt"`
+	Points    struct {
+		Fixed     *int64 `json:"fixedTrainingStepsLeft"`
+		Purchased *int64 `json:"purchasedTrainingSteps"`
+	} `json:"trainingStepsLeft"`
+	Usage *struct {
+		Negative *bool `json:"isNegative"`
+		Percent  *int  `json:"percent"`
+	} `json:"usage"`
+}
+
+// This is a read-only snapshot, not a guarantee that a subsequent request is
+// free: another client may consume the allowance between the two requests.
+func (s opusTestSubscription) hasV5Allowance(now int64) bool {
+	return s.Active && s.Tier == 3 && s.ExpiresAt > now &&
+		s.Usage != nil && s.Usage.Negative != nil && !*s.Usage.Negative
+}
+
+func TestV5AllowanceSnapshot(t *testing.T) {
+	for _, tc := range []struct {
+		name, body string
+		want       bool
+	}{
+		{"available", `{"active":true,"tier":3,"expiresAt":200,"usage":{"isNegative":false,"percent":25}}`, true},
+		{"fractional remainder rounds to zero", `{"active":true,"tier":3,"expiresAt":200,"usage":{"isNegative":false,"percent":0}}`, true},
+		{"exhausted", `{"active":true,"tier":3,"expiresAt":200,"usage":{"isNegative":true,"percent":0}}`, false},
+		{"missing usage is unknown", `{"active":true,"tier":3,"expiresAt":200}`, false},
+		{"missing exhaustion flag is unknown", `{"active":true,"tier":3,"expiresAt":200,"usage":{"percent":25}}`, false},
+		{"inactive", `{"active":false,"tier":3,"expiresAt":200,"usage":{"isNegative":false}}`, false},
+		{"expired", `{"active":true,"tier":3,"expiresAt":100,"usage":{"isNegative":false}}`, false},
+		{"not Opus", `{"active":true,"tier":2,"expiresAt":200,"usage":{"isNegative":false}}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var subscription opusTestSubscription
+			require.NoError(t, common.UnmarshalJsonStr(tc.body, &subscription))
+			assert.Equal(t, tc.want, subscription.hasV5Allowance(100))
+		})
+	}
+}
+
+// This opt-in test only reads subscription state; it never generates images.
+func TestLiveOpusSubscription(t *testing.T) {
+	if os.Getenv("NAI_SUBSCRIPTION_TEST") != "1" {
+		t.Skip("set NAI_SUBSCRIPTION_TEST=1 and NAI_TOKEN to read the current Opus allowance")
+	}
+	token := os.Getenv("NAI_TOKEN")
+	require.NotEmpty(t, token, "NAI_TOKEN is required")
+	subscription := readOpusSubscription(t, token)
+	t.Logf("Opus subscription active; Anlas=%d; V5 allowance snapshot available=%t",
+		*subscription.Points.Fixed+*subscription.Points.Purchased, subscription.hasV5Allowance(time.Now().Unix()))
+	if subscription.Usage != nil && subscription.Usage.Percent != nil {
+		t.Logf("V5 allowance reported by upstream: %d%%", *subscription.Usage.Percent)
+	}
+}
+
+func opusAnlasBalance(t *testing.T, token string) int64 {
+	t.Helper()
+	subscription := readOpusSubscription(t, token)
+	return *subscription.Points.Fixed + *subscription.Points.Purchased
+}
+
+func liveOpusImageModel(t *testing.T, token string) (string, opusTestSubscription) {
+	t.Helper()
+	modelName := os.Getenv("NAI_LIVE_MODEL")
+	if modelName == "" {
+		modelName = "nai-diffusion-4-5-full"
+	}
+	require.Contains(t, []string{"nai-diffusion-4-5-full", "nai-diffusion-5-full", "nai-diffusion-5-full-medium", "nai-diffusion-5-curated"}, modelName)
+	if strings.HasPrefix(modelName, "nai-diffusion-5-") {
+		require.Equal(t, "1", os.Getenv("NAI_ALLOW_ANLAS_TEST"), "V5 may fall back to Anlas; explicit permission is required before testing")
+	}
+	subscription := readOpusSubscription(t, token)
+	if strings.HasPrefix(modelName, "nai-diffusion-5-") {
+		require.True(t, subscription.hasV5Allowance(time.Now().Unix()), "do not deliberately test an exhausted V5 allowance")
+	}
+	return modelName, subscription
+}
+
+func readOpusSubscription(t *testing.T, token string) opusTestSubscription {
 	t.Helper()
 	req, err := http.NewRequest(http.MethodGet, "https://image.novelai.net/user/subscription", nil)
 	require.NoError(t, err)
@@ -216,18 +326,18 @@ func opusAnlasBalance(t *testing.T, token string) int {
 	require.NoError(t, err)
 	defer response.Body.Close()
 	require.Equal(t, http.StatusOK, response.StatusCode)
-	var subscription struct {
-		Active bool `json:"active"`
-		Tier   int  `json:"tier"`
-		Points struct {
-			Fixed     int `json:"fixedTrainingStepsLeft"`
-			Purchased int `json:"purchasedTrainingSteps"`
-		} `json:"trainingStepsLeft"`
-	}
+	var subscription opusTestSubscription
 	require.NoError(t, common.DecodeJson(response.Body, &subscription))
 	require.True(t, subscription.Active)
 	require.Equal(t, 3, subscription.Tier, "only run the free small-image test with an active Opus subscription")
-	return subscription.Points.Fixed + subscription.Points.Purchased
+	require.Greater(t, subscription.ExpiresAt, time.Now().Unix(), "Opus must not be expired")
+	require.NotNil(t, subscription.Points.Fixed)
+	require.NotNil(t, subscription.Points.Purchased)
+	require.GreaterOrEqual(t, *subscription.Points.Fixed, int64(0))
+	require.GreaterOrEqual(t, *subscription.Points.Purchased, int64(0))
+	require.LessOrEqual(t, *subscription.Points.Fixed, int64(1<<31-1))
+	require.LessOrEqual(t, *subscription.Points.Purchased, int64(1<<31-1))
+	return subscription
 }
 
 // Opt-in only, against an uninitialized disposable gateway, never production.
@@ -464,16 +574,23 @@ func TestGatewayImageBilling(t *testing.T) {
 		}
 		token := os.Getenv("NAI_TOKEN")
 		require.NotEmpty(t, token)
-		anlas := opusAnlasBalance(t, token)
+		liveModel, subscription := liveOpusImageModel(t, token)
+		anlas := *subscription.Points.Fixed + *subscription.Points.Purchased
+		liveMapping, err := common.Marshal(map[string]string{paid: liveModel, free: liveModel, legacy: liveModel})
+		require.NoError(t, err)
 		api(t, "PUT", "/api/token/", admin, map[string]any{"id": tokenID, "name": "nai-gateway-test", "remain_quota": 1000000, "expired_time": -1, "group": "default"})
 		api(t, "PUT", "/api/channel/", admin, map[string]any{
 			"id": channelID, "type": constant.ChannelTypeNovelAI, "base_url": "https://image.novelai.net",
-			"key": token, "param_override": "{}",
+			"key": token, "param_override": "{}", "model_mapping": string(liveMapping),
 		})
+		liveSteps := 23
+		if liveModel == "nai-diffusion-5-full-medium" {
+			liveSteps = 14
+		}
 		before := balances(t)
 		code, body := request(t, "POST", "/v1/images/generations", key, map[string]any{
 			"model": paid, "prompt": "a quiet mountain lake, pine forest, blue sky, watercolor landscape, no people",
-			"n": 1, "size": "832x1216", "response_format": "b64_json", "parameters": map[string]any{"steps": 23},
+			"n": 1, "size": "832x1216", "response_format": "b64_json", "parameters": map[string]any{"steps": liveSteps},
 		})
 		require.Equal(t, http.StatusOK, code, "error code: %s", gjson.GetBytes(body, "error.code").String())
 		image, err := base64.StdEncoding.DecodeString(gjson.GetBytes(body, "data.0.b64_json").String())
@@ -482,7 +599,8 @@ func TestGatewayImageBilling(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, 832, config.Width)
 		require.Equal(t, 1216, config.Height)
-		assert.Equal(t, anlas, opusAnlasBalance(t, token), "free small-image test must not consume Anlas")
+		anlasAfter := opusAnlasBalance(t, token)
+		assert.Equal(t, anlas, anlasAfter, "free small-image test must not consume Anlas")
 		want := [6]int64{before[0] - 5000, before[1] + 5000, before[2] + 1, before[3] - 5000, before[4] + 5000, before[5] + 5000}
 		assert.Equal(t, want, balances(t), "test-only $0.01 image price must settle independently of upstream Anlas")
 		logs := api(t, "GET", "/api/log/?type=2&token_name=nai-gateway-test", admin, nil).Get("items").Array()
@@ -492,6 +610,6 @@ func TestGatewayImageBilling(t *testing.T) {
 		if path := os.Getenv("NAI_OUTPUT_PATH"); path != "" {
 			require.NoError(t, os.WriteFile(path, image, 0600))
 		}
-		t.Logf("full authenticated image relay and test billing passed; Anlas before=%d after=%d", anlas, anlas)
+		t.Logf("full authenticated image relay completed; model=%s; Anlas before=%d after=%d", liveModel, anlas, anlasAfter)
 	})
 }

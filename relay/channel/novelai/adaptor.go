@@ -41,6 +41,7 @@ func (*Adaptor) GetChannelName() string { return "NovelAI" }
 func (*Adaptor) GetModelList() []string {
 	return []string{
 		"nai-diffusion-5-full",
+		"nai-diffusion-5-full-medium",
 		"nai-diffusion-5-curated",
 		"nai-diffusion-4-5-full",
 		"nai-diffusion-4-5-curated",
@@ -93,8 +94,10 @@ func (*Adaptor) ConvertImageRequest(_ *gin.Context, info *relaycommon.RelayInfo,
 			return nil, invalidRequest(errors.New("size must be WIDTHxHEIGHT"))
 		}
 	}
-	scale := 5.0
+	scale, steps := 5.0, 23
 	switch {
+	case request.Model == "nai-diffusion-5-full-medium":
+		scale, steps = 7, 14
 	case strings.HasPrefix(request.Model, "nai-diffusion-5-"):
 		scale = 7
 	case strings.HasPrefix(request.Model, "nai-diffusion-4-") &&
@@ -102,7 +105,7 @@ func (*Adaptor) ConvertImageRequest(_ *gin.Context, info *relaycommon.RelayInfo,
 		scale = 5.5
 	}
 	defaults, err := common.Marshal(map[string]any{
-		"width": width, "height": height, "steps": 23,
+		"width": width, "height": height, "steps": steps,
 		"sampler": "k_euler_ancestral", "scale": scale,
 		"seed": rand.Uint32(), "n_samples": count, "params_version": 4,
 		"negative_prompt": "", "sm": false, "sm_dyn": false,

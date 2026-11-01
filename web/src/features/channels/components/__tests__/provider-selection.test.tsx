@@ -66,6 +66,7 @@ test('NovelAI is searchable and selects its built-in image channel', async () =>
     name: 'NovelAI Built-in #64',
   })
   expect(option).toHaveAccessibleDescription('Image Generation')
+  expect(within(option).getByRole('img', { name: 'NovelAI' })).toBeVisible()
   await user.click(option)
   expect(select).toHaveBeenCalledWith({ kind: 'builtin', type: 64 })
 })
