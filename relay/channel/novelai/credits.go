@@ -2,6 +2,7 @@ package novelai
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"math"
@@ -35,13 +36,30 @@ func EstimateImageCredits(c *gin.Context, info *relaycommon.RelayInfo, body []by
 	if !slices.Contains((&Adaptor{}).GetModelList(), request.Model) {
 		return 0, errors.New("NovelAI estimated credit pricing does not support this model")
 	}
-	for key := range request.Parameters {
+	for key, value := range request.Parameters {
+		supported := true
 		switch key {
 		case "width", "height", "steps", "sampler", "scale", "seed", "n_samples",
 			"params_version", "negative_prompt", "sm", "sm_dyn", "dynamic_thresholding",
 			"v4_prompt", "v4_negative_prompt", "cfg_rescale", "noise_schedule",
-			"legacy_v3_extend", "skip_cfg_above_sigma":
+			"legacy_v3_extend", "skip_cfg_above_sigma",
+			"qualityToggle", "legacy", "uncond_scale", "prefer_brownian",
+			"deliberate_euler_ancestral_bug", "straight_alpha", "use_coords", "characterPrompts":
+		case "image_format":
+			var format string
+			supported = common.Unmarshal(value, &format) == nil && format == "png"
+		case "add_original_image":
+			var enabled *bool
+			supported = common.Unmarshal(value, &enabled) == nil && enabled != nil && !*enabled
+		case "reference_image_multiple", "reference_information_extracted_multiple", "reference_strength_multiple":
+			// Clients send these even with Vibe Transfer disabled. Nonempty
+			// references still need a separate credit estimator.
+			var references []json.RawMessage
+			supported = common.Unmarshal(value, &references) == nil && references != nil && len(references) == 0
 		default:
+			supported = false
+		}
+		if !supported {
 			return 0, errors.New("NovelAI estimated credit pricing does not support references, image inputs or additional generation features")
 		}
 	}

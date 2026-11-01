@@ -25,6 +25,9 @@ import (
 
 func ImageHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types.NewAPIError) {
 	info.InitChannelMeta(c)
+	if c.Request.URL.Path == "/ai/generate-image" && info.ApiType != constant.APITypeNovelAI {
+		return types.NewErrorWithStatusCode(errors.New("NovelAI native requests require a NovelAI channel"), types.ErrorCodeInvalidRequest, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
+	}
 	info.BillingImageCount = nil
 	info.ImageRequestCount = 0
 	if info.BillingRequestInput != nil {

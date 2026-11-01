@@ -1,7 +1,9 @@
 package novelai
 
 import (
+	"archive/zip"
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -71,9 +73,42 @@ func (*Adaptor) SetupRequestHeader(c *gin.Context, header *http.Header, info *re
 	return nil
 }
 
-func (*Adaptor) ConvertImageRequest(_ *gin.Context, info *relaycommon.RelayInfo, request dto.ImageRequest) (any, error) {
+func (*Adaptor) ConvertImageRequest(c *gin.Context, info *relaycommon.RelayInfo, request dto.ImageRequest) (any, error) {
 	if info.RelayMode != relayconstant.RelayModeImagesGenerations {
 		return nil, invalidRequest(errors.New("NovelAI only supports image generation"))
+	}
+	_, native := request.Extra["input"]
+	if native || c != nil && c.Request.URL.Path == "/ai/generate-image" {
+		payload := ImageRequest{Model: request.Model}
+		for field, target := range map[string]any{
+			"input": &payload.Input, "action": &payload.Action, "parameters": &payload.Parameters,
+		} {
+			if err := common.Unmarshal(request.Extra[field], target); err != nil {
+				return nil, invalidRequest(fmt.Errorf("invalid NovelAI %s", field))
+			}
+		}
+		if request.Prompt != "" && request.Prompt != payload.Input {
+			return nil, invalidRequest(errors.New("NovelAI input and prompt must not conflict"))
+		}
+		for field := range request.Extra {
+			if field != "input" && field != "action" && field != "parameters" {
+				return nil, invalidRequest(fmt.Errorf("unsupported NovelAI request field: %s", field))
+			}
+		}
+		body, err := common.Marshal(payload)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := ValidateRequest(body); err != nil {
+			return nil, invalidRequest(err)
+		}
+		return payload, nil
+	}
+	if raw, exists := request.Extra["action"]; exists {
+		var action string
+		if err := common.Unmarshal(raw, &action); err != nil || action != "generate" {
+			return nil, invalidRequest(errors.New("NovelAI requires action generate"))
+		}
 	}
 	if request.ResponseFormat != "" && request.ResponseFormat != "b64_json" {
 		return nil, invalidRequest(errors.New("NovelAI supports response_format b64_json only"))
@@ -243,6 +278,41 @@ func (*Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycommo
 			return nil, types.NewOpenAIError(errors.New("NovelAI returned an empty image"), types.ErrorCodeBadResponseBody, http.StatusBadGateway)
 		}
 		response.Data = append(response.Data, dto.ImageData{B64Json: image.Image})
+	}
+	if c.Request.URL.Path == "/ai/generate-image" {
+		var body []byte
+		contentType := "application/json"
+		if strings.Contains(c.GetHeader("Accept"), "application/json") {
+			var err error
+			body, err = common.Marshal(upstream)
+			if err != nil {
+				return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
+			}
+		} else {
+			var buffer bytes.Buffer
+			archive := zip.NewWriter(&buffer)
+			for i, image := range upstream.Images {
+				data, err := base64.StdEncoding.DecodeString(image.Image)
+				if err != nil || len(data) == 0 {
+					return nil, types.NewOpenAIError(errors.New("NovelAI returned invalid base64 image data"), types.ErrorCodeBadResponseBody, http.StatusBadGateway)
+				}
+				entry, err := archive.CreateHeader(&zip.FileHeader{Name: fmt.Sprintf("image_%d.png", i), Method: zip.Store})
+				if err == nil {
+					_, err = entry.Write(data)
+				}
+				if err != nil {
+					return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
+				}
+			}
+			if err := archive.Close(); err != nil {
+				return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
+			}
+			body, contentType = buffer.Bytes(), "application/zip"
+		}
+		info.UpdateImageCount(int64(len(upstream.Images)))
+		info.SetFirstResponseTime()
+		c.Data(http.StatusCreated, contentType, body)
+		return &dto.Usage{}, nil
 	}
 	body, err := common.Marshal(response)
 	if err != nil {

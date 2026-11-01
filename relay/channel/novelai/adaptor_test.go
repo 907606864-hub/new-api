@@ -1,9 +1,11 @@
 package novelai_test
 
 import (
+	"archive/zip"
 	"bytes"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"image"
 	"image/color"
@@ -35,6 +37,128 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 )
+
+// Matches witch-paintbox's NAI request, including neutral reference fields.
+func paintboxRequest(model string) map[string]any {
+	return map[string]any{
+		"input": "a landscape", "model": model, "action": "generate",
+		"parameters": map[string]any{
+			"params_version": 4, "width": 832, "height": 1216, "steps": 28,
+			"scale": 5, "sampler": "k_euler_ancestral", "seed": 0, "n_samples": 1,
+			"negative_prompt": "blur", "qualityToggle": false, "image_format": "png",
+			"cfg_rescale": 0, "dynamic_thresholding": false, "skip_cfg_above_sigma": nil,
+			"legacy": false, "legacy_v3_extend": false, "add_original_image": false,
+			"uncond_scale": 1, "prefer_brownian": true, "deliberate_euler_ancestral_bug": false,
+			"noise_schedule": "karras", "straight_alpha": true,
+			"v4_prompt": map[string]any{
+				"caption":    map[string]any{"base_caption": "a landscape", "char_captions": []any{}},
+				"use_coords": false, "use_order": true,
+			},
+			"v4_negative_prompt": map[string]any{
+				"caption": map[string]any{"base_caption": "blur", "char_captions": []any{}}, "legacy_uc": false,
+			},
+			"use_coords": false, "characterPrompts": []any{},
+			"reference_image_multiple": []any{}, "reference_information_extracted_multiple": []any{},
+			"reference_strength_multiple": []any{},
+		},
+	}
+}
+
+func TestPaintboxNativeRequest(t *testing.T) {
+	for _, tc := range []struct {
+		name, field, value, wantError string
+		credits                       int
+	}{
+		{name: "complete native request", credits: 45},
+		{name: "do not turn img2img into generate", field: "action", value: `"img2img"`, wantError: "action generate"},
+		{name: "conflicting prompts", field: "prompt", value: `"another prompt"`, wantError: "input and prompt"},
+		{name: "wrong input type", field: "input", value: `[]`, wantError: "input"},
+		{name: "no silent batch estimation", field: "parameters.n_samples", value: `2`, wantError: "single-image"},
+		{name: "reference image", field: "parameters.reference_image_multiple", value: `["image"]`, wantError: "references"},
+		{name: "reference cost without image", field: "parameters.reference_strength_multiple", value: `[1]`, wantError: "references"},
+		{name: "malformed references", field: "parameters.reference_image_multiple", value: `{}`, wantError: "references"},
+		{name: "original image", field: "parameters.add_original_image", value: `true`, wantError: "additional"},
+		{name: "unknown feature", field: "parameters.unknown_feature", value: `true`, wantError: "additional"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			payload := paintboxRequest("nai-diffusion-5-full")
+			payload["parameters"].(map[string]any)["width"] = 1024
+			payload["parameters"].(map[string]any)["height"] = 1536
+			if tc.field != "" {
+				if field, ok := strings.CutPrefix(tc.field, "parameters."); ok {
+					payload["parameters"].(map[string]any)[field] = json.RawMessage(tc.value)
+				} else {
+					payload[tc.field] = json.RawMessage(tc.value)
+				}
+			}
+			body, err := common.Marshal(payload)
+			require.NoError(t, err)
+			original := string(body)
+			var request dto.ImageRequest
+			require.NoError(t, common.Unmarshal(body, &request))
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodPost, "/ai/generate-image", nil)
+			info := &relaycommon.RelayInfo{RelayMode: relayconstant.RelayModeImagesGenerations}
+			converted, err := (&novelai.Adaptor{}).ConvertImageRequest(c, info, request)
+			if err == nil {
+				body, err = common.Marshal(converted)
+				require.NoError(t, err)
+				var credits int
+				credits, err = novelai.EstimateImageCredits(c, info, body)
+				if tc.wantError == "" {
+					require.NoError(t, err)
+					assert.Equal(t, tc.credits, credits)
+					assert.JSONEq(t, original, string(body))
+				}
+			}
+			if tc.wantError != "" {
+				require.ErrorContains(t, err, tc.wantError)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestNativeImageResponse(t *testing.T) {
+	var pngBytes bytes.Buffer
+	require.NoError(t, png.Encode(&pngBytes, image.NewRGBA(image.Rect(0, 0, 1, 1))))
+	for _, accept := range []string{"", "application/zip", "application/json"} {
+		t.Run(accept, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(recorder)
+			c.Request = httptest.NewRequest(http.MethodPost, "/ai/generate-image", nil)
+			c.Request.Header.Set("Accept", accept)
+			info := &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{}}
+			info.PriceData.UsePrice = true
+			body, err := common.Marshal(map[string]any{"images": []any{
+				map[string]string{"image": base64.StdEncoding.EncodeToString(pngBytes.Bytes())},
+			}})
+			require.NoError(t, err)
+			_, apiErr := (&novelai.Adaptor{}).DoResponse(c, &http.Response{
+				StatusCode: http.StatusOK, Body: io.NopCloser(bytes.NewReader(body)),
+			}, info)
+			require.Nil(t, apiErr)
+			require.Equal(t, http.StatusCreated, recorder.Code)
+			assert.Equal(t, float64(1), info.PriceData.OtherRatios()["n"])
+			if accept == "application/json" {
+				assert.JSONEq(t, string(body), recorder.Body.String())
+			} else {
+				assert.Equal(t, "application/zip", recorder.Header().Get("Content-Type"))
+				archive, err := zip.NewReader(bytes.NewReader(recorder.Body.Bytes()), int64(recorder.Body.Len()))
+				require.NoError(t, err)
+				require.Len(t, archive.File, 1)
+				assert.Equal(t, "image_0.png", archive.File[0].Name)
+				entry, err := archive.File[0].Open()
+				require.NoError(t, err)
+				defer entry.Close()
+				data, err := io.ReadAll(entry)
+				require.NoError(t, err)
+				assert.Equal(t, pngBytes.Bytes(), data)
+			}
+		})
+	}
+}
 
 func TestImageConversionRetainsMappedModelAndNativeParameters(t *testing.T) {
 	for _, tc := range []struct {
@@ -513,7 +637,8 @@ func TestGatewayImageBilling(t *testing.T) {
 		if !assert.NoError(t, err) {
 			return
 		}
-		assert.Contains(t, []string{"nai-diffusion-4-5-full", "nai-diffusion-5-full-medium"}, gjson.GetBytes(body, "model").String())
+		assert.Contains(t, []string{"nai-diffusion-4-5-full", "nai-diffusion-5-full-medium", "nai-diffusion-5-full"}, gjson.GetBytes(body, "model").String())
+		assert.Equal(t, "generate", gjson.GetBytes(body, "action").String())
 		receivedQuantity.Store(gjson.GetBytes(body, "parameters.n_samples").Int())
 		if barrier := gate.Load(); barrier != nil {
 			barrier.entered <- struct{}{}
@@ -572,13 +697,13 @@ func TestGatewayImageBilling(t *testing.T) {
 	fixture.Start()
 	t.Cleanup(fixture.Close)
 
-	const paid, free, legacy, estimated = "nai-diffusion-gateway-paid", "nai-diffusion-gateway-free", "nai-diffusion-gateway-legacy", "nai-diffusion-gateway-credits"
+	const paid, free, legacy, estimated, nativeModel = "nai-diffusion-gateway-paid", "nai-diffusion-gateway-free", "nai-diffusion-gateway-legacy", "nai-diffusion-gateway-credits", "nai-diffusion-5-full"
 	mapping, err := common.Marshal(map[string]string{paid: "nai-diffusion-4-5-full", free: "nai-diffusion-4-5-full", legacy: "nai-diffusion-4-5-full", estimated: "nai-diffusion-5-full-medium"})
 	require.NoError(t, err)
 	api(t, "POST", "/api/channel/", admin, map[string]any{
 		"mode": "single", "channel": map[string]any{
 			"type": constant.ChannelTypeNovelAI, "name": "nai-gateway-test", "key": "fixture-upstream-token",
-			"base_url": fixture.URL, "models": strings.Join([]string{paid, free, legacy, estimated}, ","), "group": "default",
+			"base_url": fixture.URL, "models": strings.Join([]string{paid, free, legacy, estimated, nativeModel}, ","), "group": "default",
 			"model_mapping": string(mapping), "auto_ban": 0,
 		},
 	})
@@ -589,7 +714,7 @@ func TestGatewayImageBilling(t *testing.T) {
 	t.Cleanup(func() { api(t, "DELETE", channelPath, admin, nil) })
 	snapshot := api(t, "GET", "/api/option/model_pricing", admin, nil)
 	changes := []map[string]any{}
-	for _, name := range []string{paid, free, legacy, estimated} {
+	for _, name := range []string{paid, free, legacy, estimated, nativeModel} {
 		version := snapshot.Get("empty_version").String()
 		for _, entry := range snapshot.Get("entries").Array() {
 			if entry.Get("model_name").String() == name {
@@ -604,7 +729,7 @@ func TestGatewayImageBilling(t *testing.T) {
 			pricing["billing_setting.billing_expr"] = `tier("image", fixed(0)) * image_count`
 		} else if name == legacy {
 			pricing = map[string]any{"ModelPrice": 0.01}
-		} else if name == estimated {
+		} else if name == estimated || name == nativeModel {
 			pricing["billing_setting.billing_expr"] = `tier("anlas_estimate", fixed(0.0025)) * image_credits`
 		}
 		changes = append(changes, map[string]any{"model_name": name, "expected_version": version, "pricing": pricing})
@@ -617,6 +742,125 @@ func TestGatewayImageBilling(t *testing.T) {
 		channel := api(t, "GET", channelPath, admin, nil)
 		return [6]int64{user.Get("quota").Int(), user.Get("used_quota").Int(), user.Get("request_count").Int(),
 			token.Get("remain_quota").Int(), token.Get("used_quota").Int(), channel.Get("used_quota").Int()}
+	}
+	t.Run("native endpoint requires authentication", func(t *testing.T) {
+		for _, key := range []string{"", "invalid-fixture-token"} {
+			code, _ := request(t, "POST", "/ai/generate-image", key, paintboxRequest(nativeModel))
+			assert.Equal(t, http.StatusUnauthorized, code)
+		}
+		assert.Zero(t, calls.Load())
+	})
+	t.Run("native endpoint respects token model restrictions", func(t *testing.T) {
+		api(t, "PUT", "/api/token/", admin, map[string]any{
+			"id": tokenID, "name": "nai-gateway-test", "remain_quota": 1000000, "expired_time": -1, "group": "default",
+			"model_limits_enabled": true, "model_limits": paid,
+		})
+		code, _ := request(t, "POST", "/ai/generate-image", key, paintboxRequest(nativeModel))
+		assert.Equal(t, http.StatusForbidden, code)
+		assert.Zero(t, calls.Load())
+		api(t, "PUT", "/api/token/", admin, map[string]any{
+			"id": tokenID, "name": "nai-gateway-test", "remain_quota": 1000000, "expired_time": -1, "group": "default",
+			"model_limits_enabled": false,
+		})
+	})
+	for _, tc := range []struct {
+		name, path, override, subscription string
+		width, status, credits             int
+		field                              string
+		value                              any
+		poor, otherProvider, passthrough   bool
+	}{
+		{name: "paintbox native ZIP with free Opus allowance"},
+		{name: "paintbox body on OpenAI image endpoint", path: "/v1/images/generations"},
+		{name: "native passthrough retains credit validation", passthrough: true},
+		{name: "native exhausted V5 allowance charges Anlas", credits: 30, subscription: `{"active":true,"tier":3,"expiresAt":2147483647,"usage":{"isNegative":true}}`},
+		{name: "native unknown V5 allowance is not free", status: 400, subscription: `{"active":true,"tier":3,"expiresAt":2147483647}`},
+		{name: "native large image credits", width: 1024, credits: 45},
+		{name: "native overridden dimensions reserve final credits", credits: 45, override: `{"operations":[{"path":"parameters.width","mode":"set","value":1024},{"path":"parameters.height","mode":"set","value":1536}]}`},
+		{name: "native insufficient quota blocks upstream", width: 1024, poor: true, status: 403},
+		{name: "native action is not silently rewritten", field: "action", value: "img2img", status: 400},
+		{name: "native batch is not silently free", field: "parameters.n_samples", value: 2, status: 400},
+		{name: "native invalid count is rejected", field: "parameters.n_samples", value: 129, status: 400},
+		{name: "native nonempty references are not free", field: "parameters.reference_image_multiple", value: []string{"image"}, status: 400},
+		{name: "native unknown feature is not free", field: "parameters.unknown_feature", value: true, status: 400},
+		{name: "native endpoint cannot use another provider", otherProvider: true, status: 400},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			subscription := tc.subscription
+			if subscription == "" {
+				subscription = activeOpus
+			}
+			subscriptionBody.Store(subscription)
+			override := tc.override
+			if override == "" {
+				override = "{}"
+			}
+			channelType := constant.ChannelTypeNovelAI
+			if tc.otherProvider {
+				channelType = constant.ChannelTypeOpenAI
+			}
+			setting, err := common.Marshal(map[string]any{"pass_through_body_enabled": tc.passthrough})
+			require.NoError(t, err)
+			api(t, "PUT", "/api/channel/", admin, map[string]any{
+				"id": channelID, "type": channelType, "param_override": override, "setting": string(setting),
+			})
+			quota := 1000000
+			if tc.poor {
+				quota = 1
+			}
+			api(t, "PUT", "/api/token/", admin, map[string]any{"id": tokenID, "name": "nai-gateway-test", "remain_quota": quota, "expired_time": -1, "group": "default"})
+			payload := paintboxRequest(nativeModel)
+			parameters := payload["parameters"].(map[string]any)
+			if tc.width != 0 {
+				parameters["width"] = tc.width
+				parameters["height"] = 1536
+			}
+			if field, ok := strings.CutPrefix(tc.field, "parameters."); ok {
+				parameters[field] = tc.value
+			} else if tc.field != "" {
+				payload[tc.field] = tc.value
+			}
+			path := tc.path
+			if path == "" {
+				path = "/ai/generate-image"
+			}
+			before, beforeCalls := balances(t), calls.Load()
+			code, body := request(t, "POST", path, key, payload)
+			wantStatus := tc.status
+			if wantStatus == 0 {
+				wantStatus = http.StatusCreated
+				if path == "/v1/images/generations" {
+					wantStatus = http.StatusOK
+				}
+			}
+			require.Equal(t, wantStatus, code, "%s", body)
+			want := before
+			if tc.status == 0 {
+				assert.Equal(t, beforeCalls+1, calls.Load())
+				charge := int64(tc.credits * 1250)
+				want = [6]int64{before[0] - charge, before[1] + charge, before[2] + 1, before[3] - charge, before[4] + charge, before[5] + charge}
+				if path == "/ai/generate-image" {
+					archive, err := zip.NewReader(bytes.NewReader(body), int64(len(body)))
+					require.NoError(t, err)
+					require.Len(t, archive.File, 1)
+					entry, err := archive.File[0].Open()
+					require.NoError(t, err)
+					defer entry.Close()
+					data, err := io.ReadAll(entry)
+					require.NoError(t, err)
+					assert.Equal(t, fixturePNG.Bytes(), data)
+					if output := os.Getenv("NAI_NATIVE_OUTPUT_PATH"); output != "" {
+						require.NoError(t, os.WriteFile(output, body, 0600))
+					}
+				} else {
+					assert.Equal(t, base64.StdEncoding.EncodeToString(fixturePNG.Bytes()), gjson.GetBytes(body, "data.0.b64_json").String())
+				}
+			} else {
+				assert.Equal(t, beforeCalls, calls.Load())
+			}
+			require.Eventually(t, func() bool { return balances(t) == want }, 5*time.Second, 100*time.Millisecond,
+				"native requests must reconcile wallet, token and channel accounting")
+		})
 	}
 	for _, tc := range []struct {
 		name, model                  string
