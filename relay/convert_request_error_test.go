@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/pkg/billingexpr"
@@ -23,7 +24,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/tidwall/gjson"
 )
 
 type imageReservation struct {
@@ -132,7 +132,7 @@ func TestImageRequestReservesFinalQuantityBeforeUpstream(t *testing.T) {
 			if tc.novelAI {
 				countPath = "parameters.n_samples"
 			}
-			assert.Equal(t, int64(tc.count), gjson.GetBytes(body, countPath).Int())
+			assert.Equal(t, int64(tc.count), ojson.GetBytes(body, countPath).Int())
 			assert.Equal(t, tc.count*20000, info.PriceData.QuotaToPreConsume)
 			assert.GreaterOrEqual(t, reservation.held, info.PriceData.QuotaToPreConsume)
 			assert.Nil(t, info.BillingImageCount)

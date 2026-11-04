@@ -14,9 +14,8 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/gin-gonic/gin"
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 )
 
 func OaiResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
@@ -96,7 +95,7 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 		}
 		for _, payload := range toolStream.rewrite([]byte(data)) {
 			// ResponseChunkData only reads Type; do not round-trip native fields.
-			if err := helper.ResponseChunkData(c, dto.ResponsesStreamResponse{Type: gjson.GetBytes(payload, "type").String()}, string(payload)); err != nil {
+			if err := helper.ResponseChunkData(c, dto.ResponsesStreamResponse{Type: ojson.GetBytes(payload, "type").String()}, string(payload)); err != nil {
 				sr.Stop(err)
 				return
 			}
@@ -116,10 +115,10 @@ func rewriteSGLangResponsesCreatedAt(info *relaycommon.RelayInfo, payload []byte
 	if info.GetChannelType() != constant.ChannelTypeSGLang {
 		return payload
 	}
-	if !gjson.GetBytes(payload, path).Exists() {
+	if !ojson.GetBytes(payload, path).Exists() {
 		return payload
 	}
-	patched, err := sjson.SetBytes(payload, path, int(createdAt))
+	patched, err := ojson.SetBytes(payload, path, int(createdAt))
 	if err != nil {
 		return payload
 	}
